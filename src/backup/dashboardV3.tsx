@@ -92,37 +92,23 @@ function generateMockTimeSeriesData(timeWindow: number): Array<Array<{ value: nu
 const NUM_PANELS = 4;
 const PANEL_NAMES = ["Left", "Down", "Up", "Right"] as const;
 const DEFAULT_PANEL_COLORS: string[] = ["#e84040", "#4a7fff", "#ff9020", "#3fcf6e"];
+const DEFAULT_LEDS_PER_ARROW = 4;
 const LS_CUSTOM_PRESETS_KEY = "webfsr_led_custom_presets";
-const LS_SENSOR_MAP_KEY = "webfsr_led_sensor_map";
-
-// One entry per physical FSR sensor zone
-interface SensorZone {
-	sensorIndex: number;  // 0-based, matches WebFSR sensor order
-	panelIndex: number;   // which arrow panel (0=Left,1=Down,2=Up,3=Right)
-	ledCount: number;     // how many LEDs this zone controls
-	ledOffset: number;    // starting LED index within the panel strip
-}
 
 interface LedPreset {
 	name: string;
 	colors: string[];
 	brightness: number;
+	ledsPerArrow: number;
 }
 
-const DEFAULT_SENSOR_MAP: SensorZone[] = [
-	{ sensorIndex: 0, panelIndex: 0, ledCount: 4, ledOffset: 0 },
-	{ sensorIndex: 1, panelIndex: 1, ledCount: 4, ledOffset: 0 },
-	{ sensorIndex: 2, panelIndex: 2, ledCount: 4, ledOffset: 0 },
-	{ sensorIndex: 3, panelIndex: 3, ledCount: 4, ledOffset: 0 },
-];
-
 const BUILTIN_PRESETS: LedPreset[] = [
-	{ name: "Default", colors: ["#e84040", "#4a7fff", "#ff9020", "#3fcf6e"], brightness: 200 },
-	{ name: "DDR",     colors: ["#ffcc00", "#0088ff", "#ff2288", "#00ddaa"], brightness: 200 },
-	{ name: "White",   colors: ["#ffffff", "#ffffff", "#ffffff", "#ffffff"], brightness: 150 },
-	{ name: "Purple",  colors: ["#9966ff", "#cc44ff", "#7744ff", "#bb55ff"], brightness: 200 },
-	{ name: "Fire",    colors: ["#ff2200", "#ff6600", "#ffaa00", "#ffdd00"], brightness: 200 },
-	{ name: "Ice",     colors: ["#aaddff", "#66bbff", "#2299ff", "#0055cc"], brightness: 180 },
+	{ name: "Default", colors: ["#e84040", "#4a7fff", "#ff9020", "#3fcf6e"], brightness: 200, ledsPerArrow: 4 },
+	{ name: "DDR",     colors: ["#ffcc00", "#0088ff", "#ff2288", "#00ddaa"], brightness: 200, ledsPerArrow: 4 },
+	{ name: "White",   colors: ["#ffffff", "#ffffff", "#ffffff", "#ffffff"], brightness: 150, ledsPerArrow: 4 },
+	{ name: "Purple",  colors: ["#9966ff", "#cc44ff", "#7744ff", "#bb55ff"], brightness: 200, ledsPerArrow: 4 },
+	{ name: "Fire",    colors: ["#ff2200", "#ff6600", "#ffaa00", "#ffdd00"], brightness: 200, ledsPerArrow: 4 },
+	{ name: "Ice",     colors: ["#aaddff", "#66bbff", "#2299ff", "#0055cc"], brightness: 180, ledsPerArrow: 4 },
 ];
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -138,19 +124,13 @@ function loadCustomPresets(): LedPreset[] {
 	try {
 		const raw = localStorage.getItem(LS_CUSTOM_PRESETS_KEY);
 		return raw ? (JSON.parse(raw) as LedPreset[]) : [];
-	} catch { return []; }
+	} catch {
+		return [];
+	}
 }
+
 function saveCustomPresets(presets: LedPreset[]) {
 	localStorage.setItem(LS_CUSTOM_PRESETS_KEY, JSON.stringify(presets));
-}
-function loadSensorMap(): SensorZone[] {
-	try {
-		const raw = localStorage.getItem(LS_SENSOR_MAP_KEY);
-		return raw ? (JSON.parse(raw) as SensorZone[]) : DEFAULT_SENSOR_MAP;
-	} catch { return DEFAULT_SENSOR_MAP; }
-}
-function saveSensorMap(map: SensorZone[]) {
-	localStorage.setItem(LS_SENSOR_MAP_KEY, JSON.stringify(map));
 }
 
 /*===========================================================================*/
@@ -159,28 +139,21 @@ function saveSensorMap(map: SensorZone[]) {
 interface LedSectionProps {
 	connected: boolean;
 	sendText: (text: string) => void;
-	latestValues: number[];
-	thresholds: number[];
 }
 
-function LedSection({ connected, sendText, latestValues, thresholds }: LedSectionProps) {
+function LedSection({ connected, sendText }: LedSectionProps) {
 	const [panelColors, setPanelColors] = useState<string[]>(DEFAULT_PANEL_COLORS);
 	const [brightness, setBrightness] = useState<number>(200);
+	const [ledsPerArrow, setLedsPerArrow] = useState<number>(DEFAULT_LEDS_PER_ARROW);
+	const [ledsPerArrowInput, setLedsPerArrowInput] = useState<string>(String(DEFAULT_LEDS_PER_ARROW));
 	const [ledOpen, setLedOpen] = useState<boolean>(true);
-	const [mappingOpen, setMappingOpen] = useState<boolean>(false);
 
-	// Custom presets
+	// Custom presets — loaded from localStorage
 	const [customPresets, setCustomPresets] = useState<LedPreset[]>(loadCustomPresets);
 	const [newPresetName, setNewPresetName] = useState<string>("");
 	const [showSaveInput, setShowSaveInput] = useState<boolean>(false);
 
-	// Sensor mapping
-	const [sensorMap, setSensorMap] = useState<SensorZone[]>(loadSensorMap);
-
-	// Track which zones are currently lit so we can send off when they release
-	const litZonesRef = useRef<Set<number>>(new Set());
-
-	// On first connect query pad config
+	// On first connect, query the pad for its current LED config
 	const hasQueriedRef = useRef(false);
 	useEffect(() => {
 		if (connected && !hasQueriedRef.current) {
@@ -190,41 +163,15 @@ function LedSection({ connected, sendText, latestValues, thresholds }: LedSectio
 		if (!connected) hasQueriedRef.current = false;
 	}, [connected, sendText]);
 
-	// React to sensor values — light zones based on mapping
-	useEffect(() => {
-		if (!connected || !latestValues.length || !thresholds.length) return;
-		sensorMap.forEach((zone, zoneIdx) => {
-			const val = latestValues[zone.sensorIndex] ?? 0;
-			const thresh = thresholds[zone.sensorIndex] ?? 512;
-			const isOn = val >= thresh;
-			const wasOn = litZonesRef.current.has(zoneIdx);
-			if (isOn && !wasOn) {
-				litZonesRef.current.add(zoneIdx);
-				const color = panelColors[zone.panelIndex] ?? "#ffffff";
-				const { r, g, b } = hexToRgb(color);
-				// Send per-zone color command using LED offset
-				sendText(`l ${zone.panelIndex} ${r} ${g} ${b}\n`);
-			} else if (!isOn && wasOn) {
-				litZonesRef.current.delete(zoneIdx);
-				// Turn off just this zone — send black for this panel
-				// Only turn panel off if no other zones on same panel are still lit
-				const anyOtherOn = sensorMap.some((z, zi) =>
-					zi !== zoneIdx && z.panelIndex === zone.panelIndex && litZonesRef.current.has(zi)
-				);
-				if (!anyOtherOn) {
-					sendText(`l ${zone.panelIndex} 0 0 0\n`);
-				}
-			}
-		});
-	}, [latestValues, thresholds, connected, sensorMap, panelColors, sendText]);
-
 	const handleLedLine = (line: string) => {
 		if (!line.startsWith("c")) return false;
 		const nums = line.slice(1).trim().split(/\s+/).map(Number);
 		if (nums.length < 13) return false;
 		const newColors: string[] = [];
 		for (let i = 0; i < NUM_PANELS; i++) {
-			const r = nums[i * 3], g = nums[i * 3 + 1], b = nums[i * 3 + 2];
+			const r = nums[i * 3];
+			const g = nums[i * 3 + 1];
+			const b = nums[i * 3 + 2];
 			newColors.push(`#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`);
 		}
 		setPanelColors(newColors);
@@ -246,6 +193,8 @@ function LedSection({ connected, sendText, latestValues, thresholds }: LedSectio
 	const applyPreset = (preset: LedPreset) => {
 		setPanelColors([...preset.colors]);
 		setBrightness(preset.brightness);
+		setLedsPerArrow(preset.ledsPerArrow);
+		setLedsPerArrowInput(String(preset.ledsPerArrow));
 		preset.colors.forEach((c, i) => sendColor(i, c));
 		sendBrightness(preset.brightness);
 	};
@@ -255,13 +204,28 @@ function LedSection({ connected, sendText, latestValues, thresholds }: LedSectio
 		next[index] = hex;
 		setPanelColors(next);
 	};
+
 	const onColorCommit = (index: number, hex: string) => sendColor(index, hex);
-	const onBrightnessCommit = (val: number) => { setBrightness(val); sendBrightness(val); };
+
+	const onBrightnessCommit = (val: number) => {
+		setBrightness(val);
+		sendBrightness(val);
+	};
+
+	const onLedsPerArrowCommit = (raw: string) => {
+		const val = parseInt(raw, 10);
+		if (isNaN(val) || val < 1 || val > 64) return;
+		setLedsPerArrow(val);
+		setLedsPerArrowInput(String(val));
+		// Send as a comment/info line — firmware doesn't use this at runtime,
+		// but it's stored in the UI so custom presets remember it.
+		// If you later add a firmware command for this, wire it up here.
+	};
 
 	const saveCurrentAsPreset = () => {
 		const name = newPresetName.trim();
 		if (!name) return;
-		const preset: LedPreset = { name, colors: [...panelColors], brightness };
+		const preset: LedPreset = { name, colors: [...panelColors], brightness, ledsPerArrow };
 		const updated = [...customPresets, preset];
 		setCustomPresets(updated);
 		saveCustomPresets(updated);
@@ -275,31 +239,7 @@ function LedSection({ connected, sendText, latestValues, thresholds }: LedSectio
 		saveCustomPresets(updated);
 	};
 
-	// Sensor map helpers
-	const updateZone = (idx: number, field: keyof SensorZone, value: number) => {
-		const updated = sensorMap.map((z, i) => i === idx ? { ...z, [field]: value } : z);
-		setSensorMap(updated);
-		saveSensorMap(updated);
-	};
-
-	const addZone = () => {
-		const newZone: SensorZone = { sensorIndex: sensorMap.length, panelIndex: 0, ledCount: 2, ledOffset: 0 };
-		const updated = [...sensorMap, newZone];
-		setSensorMap(updated);
-		saveSensorMap(updated);
-	};
-
-	const removeZone = (idx: number) => {
-		const updated = sensorMap.filter((_, i) => i !== idx);
-		setSensorMap(updated);
-		saveSensorMap(updated);
-	};
-
-	const resetMap = () => {
-		setSensorMap(DEFAULT_SENSOR_MAP);
-		saveSensorMap(DEFAULT_SENSOR_MAP);
-	};
-
+	// Expose handler so parent can pipe serial lines in
 	(LedSection as unknown as { _handleLine: (l: string) => boolean })._handleLine = handleLedLine;
 
 	return (
@@ -340,22 +280,34 @@ function LedSection({ connected, sendText, latestValues, thresholds }: LedSectio
 										value={panelColors[i].toUpperCase()}
 										maxLength={7}
 										className="flex-1 text-xs font-mono bg-transparent border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring min-w-0"
-										onChange={(e) => { if (/^#[0-9a-fA-F]{6}$/.test(e.target.value)) onColorChange(i, e.target.value); }}
-										onBlur={(e) => { if (/^#[0-9a-fA-F]{6}$/.test(e.target.value)) onColorCommit(i, e.target.value); }}
+										onChange={(e) => {
+											const v = e.target.value;
+											if (/^#[0-9a-fA-F]{6}$/.test(v)) onColorChange(i, v);
+										}}
+										onBlur={(e) => {
+											const v = e.target.value;
+											if (/^#[0-9a-fA-F]{6}$/.test(v)) onColorCommit(i, v);
+										}}
 									/>
 								</div>
 							</div>
 						))}
 					</div>
 
-					{/* Brightness */}
+					{/* Brightness slider */}
 					<div className="flex flex-col gap-1">
 						<div className="flex items-center justify-between">
-							<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">Brightness</label>
+							<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
+								Brightness
+							</label>
 							<span className="text-xs font-mono text-muted-foreground">{brightness}</span>
 						</div>
 						<input
-							type="range" min={0} max={255} step={1} value={brightness}
+							type="range"
+							min={0}
+							max={255}
+							step={1}
+							value={brightness}
 							className="w-full h-1.5 accent-foreground cursor-pointer"
 							onChange={(e) => setBrightness(Number(e.target.value))}
 							onMouseUp={(e) => onBrightnessCommit(Number((e.target as HTMLInputElement).value))}
@@ -363,94 +315,30 @@ function LedSection({ connected, sendText, latestValues, thresholds }: LedSectio
 						/>
 					</div>
 
-					{/* Sensor Mapping */}
-					<div className="flex flex-col gap-1 border border-border rounded p-2">
-						<button
-							className="flex items-center justify-between w-full text-left"
-							onClick={() => setMappingOpen((o) => !o)}
-						>
-							<span className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">Sensor → LED Mapping</span>
-							<span className="text-xs text-muted-foreground">{mappingOpen ? "▲" : "▼"}</span>
-						</button>
-
-						{mappingOpen && (
-							<div className="mt-2 flex flex-col gap-2">
-								<p className="text-[11px] text-muted-foreground">
-									Map each FSR sensor to a panel and set how many LEDs it controls.
-								</p>
-
-								{/* Zone rows */}
-								<div className="flex flex-col gap-1.5">
-									{/* Header */}
-									<div className="grid grid-cols-[1.5rem_2.5rem_3.5rem_2.5rem_3rem_1.2rem] gap-1 text-[10px] text-muted-foreground font-medium uppercase tracking-wide px-0.5">
-										<span>#</span>
-										<span>FSR</span>
-										<span>Panel</span>
-										<span>LEDs</span>
-										<span>Offset</span>
-										<span></span>
-									</div>
-
-									{sensorMap.map((zone, idx) => (
-										<div key={idx} className="grid grid-cols-[1.5rem_2.5rem_3.5rem_2.5rem_3rem_1.2rem] gap-1 items-center">
-											<span className="text-[11px] text-muted-foreground text-center">{idx + 1}</span>
-											{/* Sensor index */}
-											<input
-												type="number" min={0} max={15} value={zone.sensorIndex}
-												className="text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring text-center"
-												onChange={(e) => updateZone(idx, "sensorIndex", parseInt(e.target.value) || 0)}
-											/>
-											{/* Panel dropdown */}
-											<select
-												value={zone.panelIndex}
-												className="text-xs bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring"
-												onChange={(e) => updateZone(idx, "panelIndex", parseInt(e.target.value))}
-											>
-												{PANEL_NAMES.map((n, pi) => (
-													<option key={pi} value={pi}>{n}</option>
-												))}
-											</select>
-											{/* LED count */}
-											<input
-												type="number" min={1} max={64} value={zone.ledCount}
-												className="text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring text-center"
-												onChange={(e) => updateZone(idx, "ledCount", parseInt(e.target.value) || 1)}
-											/>
-											{/* LED offset */}
-											<input
-												type="number" min={0} max={63} value={zone.ledOffset}
-												className="text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring text-center"
-												onChange={(e) => updateZone(idx, "ledOffset", parseInt(e.target.value) || 0)}
-											/>
-											{/* Delete */}
-											<button
-												onClick={() => removeZone(idx)}
-												className="text-xs text-muted-foreground hover:text-destructive transition-colors text-center"
-												title="Remove zone"
-											>×</button>
-										</div>
-									))}
-								</div>
-
-								<div className="flex gap-1 mt-1">
-									<Button variant="outline" size="sm" className="text-xs flex-1" onClick={addZone}>
-										+ Add zone
-									</Button>
-									<Button variant="outline" size="sm" className="text-xs flex-1" onClick={resetMap}>
-										Reset
-									</Button>
-								</div>
-
-								<p className="text-[10px] text-muted-foreground">
-									FSR = sensor number (0-based). Offset = first LED in this zone on the strip.
-								</p>
-							</div>
-						)}
+					{/* LEDs per arrow */}
+					<div className="flex items-center justify-between gap-2">
+						<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide whitespace-nowrap">
+							LEDs per arrow
+						</label>
+						<input
+							type="number"
+							min={1}
+							max={64}
+							value={ledsPerArrowInput}
+							className="w-16 text-xs font-mono bg-transparent border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring text-right"
+							onChange={(e) => setLedsPerArrowInput(e.target.value)}
+							onBlur={(e) => onLedsPerArrowCommit(e.target.value)}
+							onKeyDown={(e) => {
+								if (e.key === "Enter") onLedsPerArrowCommit((e.target as HTMLInputElement).value);
+							}}
+						/>
 					</div>
 
 					{/* Built-in presets */}
 					<div className="flex flex-col gap-1">
-						<span className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">Built-in presets</span>
+						<span className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
+							Built-in presets
+						</span>
 						<div className="flex flex-wrap gap-1">
 							{BUILTIN_PRESETS.map((preset) => (
 								<button
@@ -472,7 +360,9 @@ function LedSection({ connected, sendText, latestValues, thresholds }: LedSectio
 					{/* Custom presets */}
 					<div className="flex flex-col gap-1">
 						<div className="flex items-center justify-between">
-							<span className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">My presets</span>
+							<span className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
+								My presets
+							</span>
 							<button
 								className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
 								onClick={() => setShowSaveInput((v) => !v)}
@@ -481,22 +371,32 @@ function LedSection({ connected, sendText, latestValues, thresholds }: LedSectio
 							</button>
 						</div>
 
+						{/* Save current as preset */}
 						{showSaveInput && (
 							<div className="flex gap-1 mt-1">
 								<input
-									type="text" placeholder="Preset name…" value={newPresetName} maxLength={32}
+									type="text"
+									placeholder="Preset name…"
+									value={newPresetName}
+									maxLength={32}
 									className="flex-1 text-xs bg-transparent border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring min-w-0"
 									onChange={(e) => setNewPresetName(e.target.value)}
 									onKeyDown={(e) => { if (e.key === "Enter") saveCurrentAsPreset(); }}
 									autoFocus
 								/>
-								<Button size="sm" variant="outline" className="text-xs px-2 shrink-0"
-									onClick={saveCurrentAsPreset} disabled={!newPresetName.trim()}>
+								<Button
+									size="sm"
+									variant="outline"
+									className="text-xs px-2 shrink-0"
+									onClick={saveCurrentAsPreset}
+									disabled={!newPresetName.trim()}
+								>
 									Save
 								</Button>
 							</div>
 						)}
 
+						{/* List of saved presets */}
 						{customPresets.length === 0 && !showSaveInput && (
 							<p className="text-[11px] text-muted-foreground italic">
 								No custom presets yet — set your colors and click "+ Save current"
@@ -520,19 +420,29 @@ function LedSection({ connected, sendText, latestValues, thresholds }: LedSectio
 										onClick={() => deleteCustomPreset(idx)}
 										className="px-1.5 py-1 text-xs rounded-r border border-l-0 border-border bg-transparent hover:bg-destructive hover:text-destructive-foreground transition-colors text-muted-foreground"
 										title="Delete preset"
-									>×</button>
+									>
+										×
+									</button>
 								</div>
 							))}
 						</div>
 					</div>
 
-					<Button variant="outline" size="sm" className="w-full text-xs" disabled={!connected}
-						onClick={() => sendText("q\n")}>
+					{/* Sync button */}
+					<Button
+						variant="outline"
+						size="sm"
+						className="w-full text-xs"
+						disabled={!connected}
+						onClick={() => sendText("q\n")}
+					>
 						Sync from pad
 					</Button>
 
 					{!connected && (
-						<p className="text-[11px] text-muted-foreground text-center">Connect to pad to control LEDs</p>
+						<p className="text-[11px] text-muted-foreground text-center">
+							Connect to pad to control LEDs
+						</p>
 					)}
 				</div>
 			)}
