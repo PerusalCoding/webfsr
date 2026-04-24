@@ -159,10 +159,11 @@ function saveSensorMap(map: SensorZone[]) {
 interface LedSectionProps {
 	connected: boolean;
 	sendText: (text: string) => void;
+	latestValues: number[];
 	thresholds: number[];
 }
 
-function LedSection({ connected, sendText }: LedSectionProps) {
+function LedSection({ connected, sendText, latestValues, thresholds }: LedSectionProps) {
 	const [panelColors, setPanelColors] = useState<string[]>(DEFAULT_PANEL_COLORS);
 	const [brightness, setBrightness] = useState<number>(200);
 	const [ledOpen, setLedOpen] = useState<boolean>(true);
@@ -189,9 +190,33 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 		if (!connected) hasQueriedRef.current = false;
 	}, [connected, sendText]);
 
-	// Note: LED on/off on press is handled entirely by the firmware.
-	// The web app only sends color and brightness commands.
-	// The sensor mapping UI is saved locally so users can document their setup.
+	// React to sensor values — light zones based on mapping
+	useEffect(() => {
+		if (!connected || !latestValues.length || !thresholds.length) return;
+		sensorMap.forEach((zone, zoneIdx) => {
+			const val = latestValues[zone.sensorIndex] ?? 0;
+			const thresh = thresholds[zone.sensorIndex] ?? 512;
+			const isOn = val >= thresh;
+			const wasOn = litZonesRef.current.has(zoneIdx);
+			if (isOn && !wasOn) {
+				litZonesRef.current.add(zoneIdx);
+				const color = panelColors[zone.panelIndex] ?? "#ffffff";
+				const { r, g, b } = hexToRgb(color);
+				// Send per-zone color command using LED offset
+				sendText(`l ${zone.panelIndex} ${r} ${g} ${b}\n`);
+			} else if (!isOn && wasOn) {
+				litZonesRef.current.delete(zoneIdx);
+				// Turn off just this zone — send black for this panel
+				// Only turn panel off if no other zones on same panel are still lit
+				const anyOtherOn = sensorMap.some((z, zi) =>
+					zi !== zoneIdx && z.panelIndex === zone.panelIndex && litZonesRef.current.has(zi)
+				);
+				if (!anyOtherOn) {
+					sendText(`l ${zone.panelIndex} 0 0 0\n`);
+				}
+			}
+		});
+	}, [latestValues, thresholds, connected, sensorMap, panelColors, sendText]);
 
 	const handleLedLine = (line: string) => {
 		if (!line.startsWith("c")) return false;
