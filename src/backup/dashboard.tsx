@@ -48,6 +48,7 @@ function useIsMobile() {
 	return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
 
+// annoying but needed to prevent re-renders of some components with specific callbacks
 function useStableCallback<Args extends unknown[], R>(callback: (...args: Args) => R): (...args: Args) => R {
 	const callbackRef = useRef(callback);
 	callbackRef.current = callback;
@@ -59,6 +60,7 @@ function useStableCallback<Args extends unknown[], R>(callback: (...args: Args) 
 	return stableCallbackRef.current as (...args: Args) => R;
 }
 
+// Mock preview data for when pad is not connected
 const MOCK_SENSOR_COUNT = 6;
 const MOCK_SENSOR_VALUES = [280, 620, 445, 780, 390, 540];
 const MOCK_THRESHOLDS = [480, 550, 420, 600, 510, 470];
@@ -86,239 +88,6 @@ function generateMockTimeSeriesData(timeWindow: number): Array<Array<{ value: nu
 	});
 }
 
-/*===========================================================================*/
-// LED PANEL — types and helpers
-
-const NUM_PANELS = 4;
-const PANEL_NAMES = ["Left", "Down", "Up", "Right"] as const;
-
-const DEFAULT_PANEL_COLORS: string[] = ["#e84040", "#4a7fff", "#ff9020", "#3fcf6e"];
-
-const LED_PRESETS: { name: string; colors: string[] }[] = [
-	{ name: "Default", colors: ["#e84040", "#4a7fff", "#ff9020", "#3fcf6e"] },
-	{ name: "DDR",     colors: ["#ffcc00", "#0088ff", "#ff2288", "#00ddaa"] },
-	{ name: "White",   colors: ["#ffffff", "#ffffff", "#ffffff", "#ffffff"] },
-	{ name: "Purple",  colors: ["#9966ff", "#cc44ff", "#7744ff", "#bb55ff"] },
-	{ name: "Fire",    colors: ["#ff2200", "#ff6600", "#ffaa00", "#ffdd00"] },
-	{ name: "Ice",     colors: ["#aaddff", "#66bbff", "#2299ff", "#0055cc"] },
-];
-
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-	const clean = hex.replace("#", "");
-	return {
-		r: parseInt(clean.slice(0, 2), 16),
-		g: parseInt(clean.slice(2, 4), 16),
-		b: parseInt(clean.slice(4, 6), 16),
-	};
-}
-
-/*===========================================================================*/
-// LED Section component — sits in the sidebar just like other sections
-
-interface LedSectionProps {
-	connected: boolean;
-	sendText: (text: string) => void;
-}
-
-function LedSection({ connected, sendText }: LedSectionProps) {
-	const [panelColors, setPanelColors] = useState<string[]>(DEFAULT_PANEL_COLORS);
-	const [brightness, setBrightness] = useState<number>(200);
-	const [ledOpen, setLedOpen] = useState<boolean>(true);
-
-	// On first connect, query the pad for its current LED config
-	const hasQueriedRef = useRef(false);
-	useEffect(() => {
-		if (connected && !hasQueriedRef.current) {
-			hasQueriedRef.current = true;
-			setTimeout(() => sendText("q\n"), 400);
-		}
-		if (!connected) {
-			hasQueriedRef.current = false;
-		}
-	}, [connected, sendText]);
-
-	// Parse "c r g b r g b r g b r g b brightness" responses from firmware
-	// This is called from the parent via a ref — see ledResponseHandlerRef below.
-	// We expose a stable handler via the returned ref so dashboard can pipe serial lines to us.
-	const handleLedLine = (line: string) => {
-		if (!line.startsWith("c")) return false;
-		const nums = line.slice(1).trim().split(/\s+/).map(Number);
-		if (nums.length < 13) return false;
-		const newColors: string[] = [];
-		for (let i = 0; i < NUM_PANELS; i++) {
-			const r = nums[i * 3];
-			const g = nums[i * 3 + 1];
-			const b = nums[i * 3 + 2];
-			newColors.push(`#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`);
-		}
-		setPanelColors(newColors);
-		setBrightness(nums[12]);
-		return true;
-	};
-
-	const sendColor = (index: number, hex: string) => {
-		if (!connected) return;
-		const { r, g, b } = hexToRgb(hex);
-		sendText(`l ${index} ${r} ${g} ${b}\n`);
-	};
-
-	const sendBrightness = (val: number) => {
-		if (!connected) return;
-		sendText(`b ${val}\n`);
-	};
-
-	const applyPreset = (colors: string[]) => {
-		const next = [...colors];
-		setPanelColors(next);
-		next.forEach((c, i) => sendColor(i, c));
-	};
-
-	const onColorChange = (index: number, hex: string) => {
-		const next = [...panelColors];
-		next[index] = hex;
-		setPanelColors(next);
-	};
-
-	const onColorCommit = (index: number, hex: string) => {
-		sendColor(index, hex);
-	};
-
-	const onBrightnessCommit = (val: number) => {
-		setBrightness(val);
-		sendBrightness(val);
-	};
-
-	// Expose handler so parent can pipe serial lines in
-	(LedSection as unknown as { _handleLine: (l: string) => boolean })._handleLine = handleLedLine;
-
-	return (
-		<div className="p-3 border rounded bg-white dark:bg-neutral-900">
-			{/* Header — click to collapse */}
-			<button
-				className="flex items-center justify-between w-full text-left mb-0"
-				onClick={() => setLedOpen((o) => !o)}
-			>
-				<span className="text-sm font-semibold">LED Panels</span>
-				<span className="text-xs text-muted-foreground">{ledOpen ? "▲" : "▼"}</span>
-			</button>
-
-			{ledOpen && (
-				<div className="mt-3 flex flex-col gap-3">
-					{/* Per-panel color pickers */}
-					<div className="grid grid-cols-2 gap-2">
-						{PANEL_NAMES.map((name, i) => (
-							<div key={name} className="flex flex-col gap-1">
-								<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
-									{name}
-								</label>
-								<div className="flex items-center gap-2">
-									<div
-										className="w-7 h-7 rounded-md border border-border shrink-0 cursor-pointer relative overflow-hidden"
-										style={{ background: panelColors[i] }}
-									>
-										<input
-											type="color"
-											value={panelColors[i]}
-											className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
-											onChange={(e) => onColorChange(i, e.target.value)}
-											onBlur={(e) => onColorCommit(i, e.target.value)}
-										/>
-									</div>
-									<input
-										type="text"
-										value={panelColors[i].toUpperCase()}
-										maxLength={7}
-										className="flex-1 text-xs font-mono bg-transparent border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring min-w-0"
-										onChange={(e) => {
-											const v = e.target.value;
-											if (/^#[0-9a-fA-F]{6}$/.test(v)) {
-												onColorChange(i, v);
-											}
-										}}
-										onBlur={(e) => {
-											const v = e.target.value;
-											if (/^#[0-9a-fA-F]{6}$/.test(v)) {
-												onColorCommit(i, v);
-											}
-										}}
-									/>
-								</div>
-							</div>
-						))}
-					</div>
-
-					{/* Brightness slider */}
-					<div className="flex flex-col gap-1">
-						<div className="flex items-center justify-between">
-							<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
-								Brightness
-							</label>
-							<span className="text-xs font-mono text-muted-foreground">{brightness}</span>
-						</div>
-						<input
-							type="range"
-							min={0}
-							max={255}
-							step={1}
-							value={brightness}
-							className="w-full h-1.5 accent-foreground cursor-pointer"
-							onChange={(e) => setBrightness(Number(e.target.value))}
-							onMouseUp={(e) => onBrightnessCommit(Number((e.target as HTMLInputElement).value))}
-							onTouchEnd={(e) => onBrightnessCommit(Number((e.target as HTMLInputElement).value))}
-						/>
-					</div>
-
-					{/* Presets */}
-					<div className="flex flex-col gap-1">
-						<span className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
-							Presets
-						</span>
-						<div className="flex flex-wrap gap-1">
-							{LED_PRESETS.map((preset) => (
-								<button
-									key={preset.name}
-									onClick={() => applyPreset(preset.colors)}
-									className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-border bg-transparent hover:bg-accent hover:text-accent-foreground transition-colors"
-								>
-									<span className="flex gap-0.5">
-										{preset.colors.map((c, ci) => (
-											<span
-												key={ci}
-												className="inline-block w-2 h-2 rounded-full"
-												style={{ background: c }}
-											/>
-										))}
-									</span>
-									{preset.name}
-								</button>
-							))}
-						</div>
-					</div>
-
-					{/* Sync button */}
-					<Button
-						variant="outline"
-						size="sm"
-						className="w-full text-xs"
-						disabled={!connected}
-						onClick={() => sendText("q\n")}
-					>
-						Sync from pad
-					</Button>
-
-					{!connected && (
-						<p className="text-[11px] text-muted-foreground text-center">
-							Connect to pad to control LEDs
-						</p>
-					)}
-				</div>
-			)}
-		</div>
-	);
-}
-
-/*===========================================================================*/
-
 const Dashboard = () => {
 	const colorSettings = useColorSettings();
 	const barSettings = useBarVisualizationSettings();
@@ -327,15 +96,13 @@ const Dashboard = () => {
 	const generalSettings = useGeneralSettings();
 	const { updateAllSettings, getAllSettings } = useSettingsBulkActions();
 
-	// Ref so we can forward "c ..." lines from serial to LedSection without re-renders
-	const ledSectionRef = useRef<typeof LedSection | null>(null);
-
 	const { isSupported, connect, disconnect, connected, connectionError, requestsPerSecond, sendText, latestData } = useSerialPort(
 		generalSettings.pollingRate,
 		generalSettings.useUnthrottledPolling,
 		(values) => {
 			const now = performance.now();
 
+			// Broadcast to OBS
 			if (obsConnected) {
 				const minIntervalMs = Math.max(1, 1000 / Math.max(1, generalSettings.obsSendRate));
 
@@ -345,6 +112,7 @@ const Dashboard = () => {
 				}
 			}
 
+			// Broadcast to remote mobile device (30/sec)
 			if (remoteConnected) {
 				const remoteMinIntervalMs = 1000 / 30;
 
@@ -355,9 +123,6 @@ const Dashboard = () => {
 			}
 		},
 	);
-
-	// Wrap sendText so LedSection can use it as a stable callback
-	const sendTextStable = useStableCallback((text: string) => sendText(text));
 
 	const numSensors = useSensorCount();
 
@@ -410,8 +175,10 @@ const Dashboard = () => {
 	const [isSyncingProfile, setIsSyncingProfile] = useState<boolean>(false);
 	const writebackTimeoutRef = useRef<number | null>(null);
 
+	// Track which color picker popovers are open
 	const [openColorPickers, setOpenColorPickers] = useState<boolean[]>([]);
 
+	// OBS component dialog state
 	const [obsComponentDialogOpen, setObsComponentDialogOpen] = useState<boolean>(false);
 	const [obsPassword, setobsPassword] = useState<string>(activeProfile?.obsPassword ?? "");
 	const [aboutOpen, setAboutOpen] = useState<boolean>(false);
@@ -419,12 +186,14 @@ const Dashboard = () => {
 
 	const isMobile = useIsMobile();
 
+	// Dev only: toggle to hide disconnected overlay
 	const [devHideOverlay, setDevHideOverlay] = useState<boolean>(import.meta.env.DEV);
 
 	useEffect(() => {
 		setobsPassword(activeProfile?.obsPassword ?? "");
 	}, [activeProfile?.obsPassword]);
 
+	// OBS connection state
 	const {
 		connect: connectOBS,
 		disconnect: disconnectOBS,
@@ -442,11 +211,14 @@ const Dashboard = () => {
 		void broadcast(payload);
 	});
 
+	// Mobile control connection handler
 	const handleRemoteMessage = useStableCallback((message: DesktopMessage | MobileMessage) => {
 		if (message.type === "threshold") {
+			// Mobile sent a threshold change
 			const { index, value } = message as { type: "threshold"; index: number; value: number };
 			handleThresholdChange(index, value);
 		} else if (message.type === "ready") {
+			// Mobile is ready, send full sync
 			sendProfileSync();
 		}
 	});
@@ -461,18 +233,23 @@ const Dashboard = () => {
 	} = useRemoteControl({
 		role: "host",
 		onPeerConnected: () => {
+			// Send full profile sync when peer connects
 			sendProfileSync();
 		},
-		onPeerDisconnected: () => {},
+		onPeerDisconnected: () => {
+			// no-op
+		},
 		onMessage: handleRemoteMessage,
 	});
 
+	// Save code when a peer successfully connects
 	useEffect(() => {
 		if (remoteConnected && remoteCode) {
 			void setLastCode(remoteCode);
 		}
 	}, [remoteConnected, remoteCode]);
 
+	// Build and send profile sync payload
 	const sendProfileSync = useStableCallback(() => {
 		if (!remoteConnected) return;
 
@@ -491,6 +268,7 @@ const Dashboard = () => {
 		sendRemote({ type: "sync", payload });
 	});
 
+	// Re-sync profile when settings change while connected
 	useEffect(() => {
 		if (!remoteConnected) return;
 		sendProfileSync();
@@ -507,17 +285,20 @@ const Dashboard = () => {
 		resolvedTheme,
 	]);
 
+	// Calculate heart beat animation duration based on BPM
 	const heartBeatDuration =
 		!heartrateData?.heartrate || !heartrateSettings.animateHeartbeat
 			? 0
-			: (60 / heartrateData.heartrate) * 1000;
+			: // Convert BPM to duration in ms
+				(60 / heartrateData.heartrate) * 1000;
 
 	const heartBeatStyle = !heartBeatDuration
 		? {}
 		: {
 				animation: `heartbeat ${heartBeatDuration}ms ease-in-out infinite`,
-		  };
+			};
 
+	// This should probably be done in the tailwind config but can refactor that later
 	useEffect(() => {
 		if (!document.getElementById("heartbeat-animation")) {
 			const style = document.createElement("style");
@@ -545,6 +326,7 @@ const Dashboard = () => {
 		});
 	}, [broadcastToOBS, connectedHR, heartrateData?.heartrate, heartrateData?.timestamp, obsConnected]);
 
+	// Handle heart rate connection toggle
 	const handleHeartrateToggle = useStableCallback(async () => {
 		if (!isBluetoothSupported) return;
 
@@ -564,14 +346,17 @@ const Dashboard = () => {
 		});
 	};
 
+	// Send all thresholds when connection is established
 	useEffect(() => {
 		if (connected) sendAllThresholds();
 	}, [connected]);
 
+	// Send all thresholds when profile changes
 	useEffect(() => {
 		if (activeProfileId && connected) sendAllThresholds();
 	}, [activeProfileId, connected]);
 
+	// Synchronize UI state with profile data
 	const syncUIStateWithProfile = (profile: ProfileData) => {
 		if (!profile) return;
 
@@ -602,6 +387,7 @@ const Dashboard = () => {
 			useUnthrottledPolling: profile.useUnthrottledPolling,
 		});
 
+		// Update thresholds and sensor labels
 		if (profile.thresholds.length > 0) {
 			setThresholds(profile.thresholds);
 		} else if (numSensors > 0) {
@@ -621,10 +407,12 @@ const Dashboard = () => {
 		}
 	};
 
+	// Load active profile data into state
 	useEffect(() => {
 		if (!activeProfile) return;
 		setIsSyncingProfile(true);
 		syncUIStateWithProfile(activeProfile);
+		// allow state to settle before enabling write-back again
 		const id = window.setTimeout(() => setIsSyncingProfile(false), 0);
 		return () => window.clearTimeout(id);
 	}, [activeProfileId]);
@@ -636,6 +424,7 @@ const Dashboard = () => {
 		updateProfile(activeProfileId, getVisualSettingsFromUIState());
 	};
 
+	// Update profile when visual settings change, avoid during initial sync and debounce
 	useEffect(() => {
 		if (!activeProfileId || isSyncingProfile) return;
 
@@ -652,9 +441,11 @@ const Dashboard = () => {
 		};
 	}, [activeProfileId, colorSettings, barSettings, graphSettings, heartrateSettings, generalSettings, isSyncingProfile]);
 
+	// Initialize defaults when number of sensors changes
 	useEffect(() => {
 		if (numSensors === 0) return;
 
+		// Initialize missing thresholds with default value
 		if (thresholds.length !== numSensors) {
 			const newThresholds = Array(numSensors).fill(512);
 			setThresholds(newThresholds);
@@ -662,6 +453,7 @@ const Dashboard = () => {
 			if (activeProfileId) updateThresholds(newThresholds);
 		}
 
+		// Initialize missing sensor labels
 		if (sensorLabels.length !== numSensors) {
 			const newLabels = Array(numSensors)
 				.fill("")
@@ -672,6 +464,7 @@ const Dashboard = () => {
 			if (activeProfileId) updateSensorLabels(newLabels);
 		}
 
+		// Initialize color picker open state
 		if (openColorPickers.length !== numSensors) setOpenColorPickers(Array(numSensors).fill(false));
 	}, [numSensors, thresholds.length, sensorLabels.length, openColorPickers.length, activeProfileId]);
 
@@ -682,6 +475,7 @@ const Dashboard = () => {
 
 		if (activeProfileId) updateThresholds(newThresholds);
 
+		// Send threshold update to serial port if connected
 		if (connected) {
 			const message = `${index} ${value}\n`;
 			sendText(message);
@@ -715,13 +509,16 @@ const Dashboard = () => {
 		void connectOBS(pwd);
 	});
 
+	// Enable auto-connect per profile
 	useEffect(() => {
 		if (!activeProfile) return;
 		const shouldAuto = Boolean((activeProfile as { obsAutoConnect?: boolean }).obsAutoConnect);
 		const pwd = activeProfile.obsPassword || "";
 
+		// only enable if password present
 		setAutoConnectEnabled(shouldAuto && !!pwd, pwd);
 
+		// If auto-connect is enabled at page load and we're idle, schedule immediately
 		if (shouldAuto && pwd && !obsConnected && !obsConnecting) {
 			setAutoConnectEnabled(true, pwd);
 		}
@@ -759,6 +556,7 @@ const Dashboard = () => {
 		/>
 	));
 
+	// Render mobile layout
 	if (isMobile) {
 		return (
 			<MobileDashboard
@@ -825,6 +623,7 @@ const Dashboard = () => {
 								variant="outline"
 								onClick={() => {
 									setPairingModalOpen(true);
+									// If not already connected, show choice if we have a last code
 									if (!remoteConnected && !remoteConnecting) {
 										if (lastCode) {
 											setShowCodeChoice(true);
@@ -869,13 +668,6 @@ const Dashboard = () => {
 									<span className="text-sm font-medium">{requestsPerSecond}</span>
 								</div>
 							</div>
-
-							{/* ── LED PANEL SECTION ── */}
-							<LedSection
-								ref={ledSectionRef}
-								connected={connected}
-								sendText={sendTextStable}
-							/>
 
 							<ProfilesSection
 								profiles={profiles}
@@ -926,6 +718,7 @@ const Dashboard = () => {
 								setOpenColorPickers={setOpenColorPickers}
 							/>
 
+							{/* Dev only toggles */}
 							{import.meta.env.DEV && (
 								<div className="p-3 border rounded bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800">
 									<label className="flex items-center gap-2 text-xs cursor-pointer">
@@ -964,11 +757,14 @@ const Dashboard = () => {
 				<div className="h-full flex flex-col overflow-hidden p-2 relative">
 					{latestData ? (
 						<>
+							{/* Bar Visualizations and Heartrate Section */}
 							<div className="flex gap-2 shrink-0 h-100">
+								{/* Bar Visualizations */}
 								<div className="px-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm grow">
 									<div className="grid grid-flow-col auto-cols-fr gap-4 h-full w-full py-2">{sensorBars}</div>
 								</div>
 
+								{/* Heartrate Tracker */}
 								{heartrateSettings.showHeartrateMonitor && (
 									<div className="p-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm aspect-square h-full flex flex-col items-center justify-center gap-2 min-w-64">
 										<div
@@ -977,6 +773,7 @@ const Dashboard = () => {
 											<Heart
 												className={`${heartrateSettings.verticalAlignHeartrate ? "size-24" : "size-20"} ${connectedHR ? "text-red-500" : "text-muted-foreground"}`}
 												fill={heartrateSettings.fillHeartIcon ? (connectedHR ? "currentColor" : "none") : "none"}
+												// Again should probably be done with tailwind config lol
 												style={connectedHR && heartrateData ? heartBeatStyle : {}}
 											/>
 											{connectedHR && heartrateData ? (
@@ -1000,6 +797,7 @@ const Dashboard = () => {
 								)}
 							</div>
 
+							{/* Time Series Graph */}
 							<div className="p-1 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm mt-2 grow min-h-0">
 								<div className="h-full">
 									<TimeSeriesGraph
@@ -1021,8 +819,12 @@ const Dashboard = () => {
 							</div>
 						</>
 					) : (
+						// Preview dashboard when not connected or not supported
 						<>
+							{/* Mock visualizations */}
+							{/* Mock Bar Visualizations and Heartrate Section */}
 							<div className="flex gap-2 shrink-0 h-100">
+								{/* Mock Bar Visualizations */}
 								<div className="px-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm grow">
 									<div className="grid grid-flow-col auto-cols-fr gap-4 h-full w-full py-2">
 										{Array.from({ length: MOCK_SENSOR_COUNT }, (_, index) => (
@@ -1050,6 +852,7 @@ const Dashboard = () => {
 									</div>
 								</div>
 
+								{/* Mock Heartrate Tracker */}
 								{heartrateSettings.showHeartrateMonitor && (
 									<div className="p-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm aspect-square h-full flex flex-col items-center justify-center gap-2 min-w-64">
 										<div
@@ -1081,6 +884,7 @@ const Dashboard = () => {
 								)}
 							</div>
 
+							{/* Mock Time Series Graph */}
 							<div className="p-1 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm mt-2 grow min-h-0">
 								<div className="h-full">
 									<TimeSeriesGraph
@@ -1102,6 +906,7 @@ const Dashboard = () => {
 								</div>
 							</div>
 
+							{/* Overlay */}
 							{!devHideOverlay && (
 								<div className="absolute inset-0 flex items-center justify-center bg-black/25 backdrop-blur-[1px]">
 									{!isSupported ? (
