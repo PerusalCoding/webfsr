@@ -91,24 +91,16 @@ function generateMockTimeSeriesData(timeWindow: number): Array<Array<{ value: nu
 
 const NUM_PANELS = 4;
 const PANEL_NAMES = ["Left", "Down", "Up", "Right"] as const;
+
 const DEFAULT_PANEL_COLORS: string[] = ["#e84040", "#4a7fff", "#ff9020", "#3fcf6e"];
-const DEFAULT_LEDS_PER_ARROW = 4;
-const LS_CUSTOM_PRESETS_KEY = "webfsr_led_custom_presets";
 
-interface LedPreset {
-	name: string;
-	colors: string[];
-	brightness: number;
-	ledsPerArrow: number;
-}
-
-const BUILTIN_PRESETS: LedPreset[] = [
-	{ name: "Default", colors: ["#e84040", "#4a7fff", "#ff9020", "#3fcf6e"], brightness: 200, ledsPerArrow: 4 },
-	{ name: "DDR",     colors: ["#ffcc00", "#0088ff", "#ff2288", "#00ddaa"], brightness: 200, ledsPerArrow: 4 },
-	{ name: "White",   colors: ["#ffffff", "#ffffff", "#ffffff", "#ffffff"], brightness: 150, ledsPerArrow: 4 },
-	{ name: "Purple",  colors: ["#9966ff", "#cc44ff", "#7744ff", "#bb55ff"], brightness: 200, ledsPerArrow: 4 },
-	{ name: "Fire",    colors: ["#ff2200", "#ff6600", "#ffaa00", "#ffdd00"], brightness: 200, ledsPerArrow: 4 },
-	{ name: "Ice",     colors: ["#aaddff", "#66bbff", "#2299ff", "#0055cc"], brightness: 180, ledsPerArrow: 4 },
+const LED_PRESETS: { name: string; colors: string[] }[] = [
+	{ name: "Default", colors: ["#e84040", "#4a7fff", "#ff9020", "#3fcf6e"] },
+	{ name: "DDR",     colors: ["#ffcc00", "#0088ff", "#ff2288", "#00ddaa"] },
+	{ name: "White",   colors: ["#ffffff", "#ffffff", "#ffffff", "#ffffff"] },
+	{ name: "Purple",  colors: ["#9966ff", "#cc44ff", "#7744ff", "#bb55ff"] },
+	{ name: "Fire",    colors: ["#ff2200", "#ff6600", "#ffaa00", "#ffdd00"] },
+	{ name: "Ice",     colors: ["#aaddff", "#66bbff", "#2299ff", "#0055cc"] },
 ];
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -120,21 +112,8 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
 	};
 }
 
-function loadCustomPresets(): LedPreset[] {
-	try {
-		const raw = localStorage.getItem(LS_CUSTOM_PRESETS_KEY);
-		return raw ? (JSON.parse(raw) as LedPreset[]) : [];
-	} catch {
-		return [];
-	}
-}
-
-function saveCustomPresets(presets: LedPreset[]) {
-	localStorage.setItem(LS_CUSTOM_PRESETS_KEY, JSON.stringify(presets));
-}
-
 /*===========================================================================*/
-// LED Section component
+// LED Section component — sits in the sidebar just like other sections
 
 interface LedSectionProps {
 	connected: boolean;
@@ -144,14 +123,7 @@ interface LedSectionProps {
 function LedSection({ connected, sendText }: LedSectionProps) {
 	const [panelColors, setPanelColors] = useState<string[]>(DEFAULT_PANEL_COLORS);
 	const [brightness, setBrightness] = useState<number>(200);
-	const [ledsPerArrow, setLedsPerArrow] = useState<number>(DEFAULT_LEDS_PER_ARROW);
-	const [ledsPerArrowInput, setLedsPerArrowInput] = useState<string>(String(DEFAULT_LEDS_PER_ARROW));
 	const [ledOpen, setLedOpen] = useState<boolean>(true);
-
-	// Custom presets — loaded from localStorage
-	const [customPresets, setCustomPresets] = useState<LedPreset[]>(loadCustomPresets);
-	const [newPresetName, setNewPresetName] = useState<string>("");
-	const [showSaveInput, setShowSaveInput] = useState<boolean>(false);
 
 	// On first connect, query the pad for its current LED config
 	const hasQueriedRef = useRef(false);
@@ -160,9 +132,14 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 			hasQueriedRef.current = true;
 			setTimeout(() => sendText("q\n"), 400);
 		}
-		if (!connected) hasQueriedRef.current = false;
+		if (!connected) {
+			hasQueriedRef.current = false;
+		}
 	}, [connected, sendText]);
 
+	// Parse "c r g b r g b r g b r g b brightness" responses from firmware
+	// This is called from the parent via a ref — see ledResponseHandlerRef below.
+	// We expose a stable handler via the returned ref so dashboard can pipe serial lines to us.
 	const handleLedLine = (line: string) => {
 		if (!line.startsWith("c")) return false;
 		const nums = line.slice(1).trim().split(/\s+/).map(Number);
@@ -190,13 +167,10 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 		sendText(`b ${val}\n`);
 	};
 
-	const applyPreset = (preset: LedPreset) => {
-		setPanelColors([...preset.colors]);
-		setBrightness(preset.brightness);
-		setLedsPerArrow(preset.ledsPerArrow);
-		setLedsPerArrowInput(String(preset.ledsPerArrow));
-		preset.colors.forEach((c, i) => sendColor(i, c));
-		sendBrightness(preset.brightness);
+	const applyPreset = (colors: string[]) => {
+		const next = [...colors];
+		setPanelColors(next);
+		next.forEach((c, i) => sendColor(i, c));
 	};
 
 	const onColorChange = (index: number, hex: string) => {
@@ -205,38 +179,13 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 		setPanelColors(next);
 	};
 
-	const onColorCommit = (index: number, hex: string) => sendColor(index, hex);
+	const onColorCommit = (index: number, hex: string) => {
+		sendColor(index, hex);
+	};
 
 	const onBrightnessCommit = (val: number) => {
 		setBrightness(val);
 		sendBrightness(val);
-	};
-
-	const onLedsPerArrowCommit = (raw: string) => {
-		const val = parseInt(raw, 10);
-		if (isNaN(val) || val < 1 || val > 64) return;
-		setLedsPerArrow(val);
-		setLedsPerArrowInput(String(val));
-		// Send as a comment/info line — firmware doesn't use this at runtime,
-		// but it's stored in the UI so custom presets remember it.
-		// If you later add a firmware command for this, wire it up here.
-	};
-
-	const saveCurrentAsPreset = () => {
-		const name = newPresetName.trim();
-		if (!name) return;
-		const preset: LedPreset = { name, colors: [...panelColors], brightness, ledsPerArrow };
-		const updated = [...customPresets, preset];
-		setCustomPresets(updated);
-		saveCustomPresets(updated);
-		setNewPresetName("");
-		setShowSaveInput(false);
-	};
-
-	const deleteCustomPreset = (index: number) => {
-		const updated = customPresets.filter((_, i) => i !== index);
-		setCustomPresets(updated);
-		saveCustomPresets(updated);
 	};
 
 	// Expose handler so parent can pipe serial lines in
@@ -244,6 +193,7 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 
 	return (
 		<div className="p-3 border rounded bg-white dark:bg-neutral-900">
+			{/* Header — click to collapse */}
 			<button
 				className="flex items-center justify-between w-full text-left mb-0"
 				onClick={() => setLedOpen((o) => !o)}
@@ -254,7 +204,6 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 
 			{ledOpen && (
 				<div className="mt-3 flex flex-col gap-3">
-
 					{/* Per-panel color pickers */}
 					<div className="grid grid-cols-2 gap-2">
 						{PANEL_NAMES.map((name, i) => (
@@ -282,11 +231,15 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 										className="flex-1 text-xs font-mono bg-transparent border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring min-w-0"
 										onChange={(e) => {
 											const v = e.target.value;
-											if (/^#[0-9a-fA-F]{6}$/.test(v)) onColorChange(i, v);
+											if (/^#[0-9a-fA-F]{6}$/.test(v)) {
+												onColorChange(i, v);
+											}
 										}}
 										onBlur={(e) => {
 											const v = e.target.value;
-											if (/^#[0-9a-fA-F]{6}$/.test(v)) onColorCommit(i, v);
+											if (/^#[0-9a-fA-F]{6}$/.test(v)) {
+												onColorCommit(i, v);
+											}
 										}}
 									/>
 								</div>
@@ -315,115 +268,29 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 						/>
 					</div>
 
-					{/* LEDs per arrow */}
-					<div className="flex items-center justify-between gap-2">
-						<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide whitespace-nowrap">
-							LEDs per arrow
-						</label>
-						<input
-							type="number"
-							min={1}
-							max={64}
-							value={ledsPerArrowInput}
-							className="w-16 text-xs font-mono bg-transparent border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring text-right"
-							onChange={(e) => setLedsPerArrowInput(e.target.value)}
-							onBlur={(e) => onLedsPerArrowCommit(e.target.value)}
-							onKeyDown={(e) => {
-								if (e.key === "Enter") onLedsPerArrowCommit((e.target as HTMLInputElement).value);
-							}}
-						/>
-					</div>
-
-					{/* Built-in presets */}
+					{/* Presets */}
 					<div className="flex flex-col gap-1">
 						<span className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
-							Built-in presets
+							Presets
 						</span>
 						<div className="flex flex-wrap gap-1">
-							{BUILTIN_PRESETS.map((preset) => (
+							{LED_PRESETS.map((preset) => (
 								<button
 									key={preset.name}
-									onClick={() => applyPreset(preset)}
+									onClick={() => applyPreset(preset.colors)}
 									className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-border bg-transparent hover:bg-accent hover:text-accent-foreground transition-colors"
 								>
 									<span className="flex gap-0.5">
 										{preset.colors.map((c, ci) => (
-											<span key={ci} className="inline-block w-2 h-2 rounded-full" style={{ background: c }} />
+											<span
+												key={ci}
+												className="inline-block w-2 h-2 rounded-full"
+												style={{ background: c }}
+											/>
 										))}
 									</span>
 									{preset.name}
 								</button>
-							))}
-						</div>
-					</div>
-
-					{/* Custom presets */}
-					<div className="flex flex-col gap-1">
-						<div className="flex items-center justify-between">
-							<span className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
-								My presets
-							</span>
-							<button
-								className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-								onClick={() => setShowSaveInput((v) => !v)}
-							>
-								{showSaveInput ? "Cancel" : "+ Save current"}
-							</button>
-						</div>
-
-						{/* Save current as preset */}
-						{showSaveInput && (
-							<div className="flex gap-1 mt-1">
-								<input
-									type="text"
-									placeholder="Preset name…"
-									value={newPresetName}
-									maxLength={32}
-									className="flex-1 text-xs bg-transparent border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring min-w-0"
-									onChange={(e) => setNewPresetName(e.target.value)}
-									onKeyDown={(e) => { if (e.key === "Enter") saveCurrentAsPreset(); }}
-									autoFocus
-								/>
-								<Button
-									size="sm"
-									variant="outline"
-									className="text-xs px-2 shrink-0"
-									onClick={saveCurrentAsPreset}
-									disabled={!newPresetName.trim()}
-								>
-									Save
-								</Button>
-							</div>
-						)}
-
-						{/* List of saved presets */}
-						{customPresets.length === 0 && !showSaveInput && (
-							<p className="text-[11px] text-muted-foreground italic">
-								No custom presets yet — set your colors and click "+ Save current"
-							</p>
-						)}
-						<div className="flex flex-wrap gap-1">
-							{customPresets.map((preset, idx) => (
-								<div key={idx} className="flex items-center gap-0.5">
-									<button
-										onClick={() => applyPreset(preset)}
-										className="flex items-center gap-1 px-2 py-1 text-xs rounded-l border border-border bg-transparent hover:bg-accent hover:text-accent-foreground transition-colors"
-									>
-										<span className="flex gap-0.5">
-											{preset.colors.map((c, ci) => (
-												<span key={ci} className="inline-block w-2 h-2 rounded-full" style={{ background: c }} />
-											))}
-										</span>
-										{preset.name}
-									</button>
-									<button
-										onClick={() => deleteCustomPreset(idx)}
-										className="px-1.5 py-1 text-xs rounded-r border border-l-0 border-border bg-transparent hover:bg-destructive hover:text-destructive-foreground transition-colors text-muted-foreground"
-										title="Delete preset"
-									>
-										×
-									</button>
-								</div>
 							))}
 						</div>
 					</div>
