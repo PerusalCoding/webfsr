@@ -179,12 +179,18 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 	// Track which zones are currently lit so we can send off when they release
 	const litZonesRef = useRef<Set<number>>(new Set());
 
-	// On first connect query pad config
+	// On first connect: query pad LED config and sync zone mapping
 	const hasQueriedRef = useRef(false);
 	useEffect(() => {
 		if (connected && !hasQueriedRef.current) {
 			hasQueriedRef.current = true;
-			setTimeout(() => sendText("q\n"), 400);
+			setTimeout(() => {
+				sendText("q\n");
+				// Sync saved zone mapping to firmware
+				sensorMap.forEach((zone) => {
+					sendText(`z ${zone.panelIndex} ${zone.ledOffset} ${zone.ledCount}\n`);
+				});
+			}, 400);
 		}
 		if (!connected) hasQueriedRef.current = false;
 	}, [connected, sendText]);
@@ -251,10 +257,20 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 	};
 
 	// Sensor map helpers
+	// Send "z <panel> <offset> <count>" to firmware for a given zone
+	const sendZoneCommand = (zone: SensorZone) => {
+		if (!connected) return;
+		sendText(`z ${zone.panelIndex} ${zone.ledOffset} ${zone.ledCount}\n`);
+	};
+
 	const updateZone = (idx: number, field: keyof SensorZone, value: number) => {
 		const updated = sensorMap.map((z, i) => i === idx ? { ...z, [field]: value } : z);
 		setSensorMap(updated);
 		saveSensorMap(updated);
+		// Send z command when zone geometry changes
+		if (field === "ledCount" || field === "ledOffset" || field === "panelIndex") {
+			sendZoneCommand(updated[idx]);
+		}
 	};
 
 	const addZone = () => {
@@ -262,6 +278,7 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 		const updated = [...sensorMap, newZone];
 		setSensorMap(updated);
 		saveSensorMap(updated);
+		sendZoneCommand(newZone);
 	};
 
 	const removeZone = (idx: number) => {
@@ -273,6 +290,7 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 	const resetMap = () => {
 		setSensorMap(DEFAULT_SENSOR_MAP);
 		saveSensorMap(DEFAULT_SENSOR_MAP);
+		DEFAULT_SENSOR_MAP.forEach((zone) => sendZoneCommand(zone));
 	};
 
 	(LedSection as unknown as { _handleLine: (l: string) => boolean })._handleLine = handleLedLine;
@@ -387,15 +405,19 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 											</select>
 											{/* LED count */}
 											<input
-												type="number" min={1} max={64} value={zone.ledCount}
+												type="number" min={1} max={64} defaultValue={zone.ledCount}
+												key={`count-${idx}-${zone.ledCount}`}
 												className="text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring text-center"
-												onChange={(e) => updateZone(idx, "ledCount", parseInt(e.target.value) || 1)}
+												onBlur={(e) => updateZone(idx, "ledCount", parseInt(e.target.value) || 1)}
+												onKeyDown={(e) => { if (e.key === "Enter") updateZone(idx, "ledCount", parseInt((e.target as HTMLInputElement).value) || 1); }}
 											/>
 											{/* LED offset */}
 											<input
-												type="number" min={0} max={63} value={zone.ledOffset}
+												type="number" min={0} max={63} defaultValue={zone.ledOffset}
+												key={`offset-${idx}-${zone.ledOffset}`}
 												className="text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring text-center"
-												onChange={(e) => updateZone(idx, "ledOffset", parseInt(e.target.value) || 0)}
+												onBlur={(e) => updateZone(idx, "ledOffset", parseInt(e.target.value) || 0)}
+												onKeyDown={(e) => { if (e.key === "Enter") updateZone(idx, "ledOffset", parseInt((e.target as HTMLInputElement).value) || 0); }}
 											/>
 											{/* Delete */}
 											<button
@@ -1069,7 +1091,6 @@ const Dashboard = () => {
 							<LedSection
 								connected={connected}
 								sendText={sendTextStable}
-								latestValues={latestData?.values ?? []}
 								thresholds={thresholds}
 							/>
 
