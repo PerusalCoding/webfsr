@@ -276,8 +276,9 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 		setSensors(updated);
 		saveSensors(updated);
 		const s = updated[i];
-		if ("color" in patch) sendColor(i, s.color);
-		if ("ledOffset" in patch || "ledCount" in patch) sendZone(i, s.ledOffset, s.ledCount);
+		// Always use s.sensorIndex (not i) so firmware gets the correct sensor
+		if ("color" in patch || "sensorIndex" in patch) sendColor(s.sensorIndex, s.color);
+		if ("ledOffset" in patch || "ledCount" in patch || "sensorIndex" in patch) sendZone(s.sensorIndex, s.ledOffset, s.ledCount);
 	};
 
 	const addSensor = () => {
@@ -381,8 +382,24 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 									onChange={(e) => updateSensor(i, { label: e.target.value })}
 									placeholder={`S${i}`}
 								/>
-								{/* Sensor index badge */}
-								<span className="text-[10px] font-mono text-muted-foreground shrink-0">#{i}</span>
+								{/* Editable firmware sensor index */}
+								<div className="flex items-center gap-0.5 shrink-0">
+									<span className="text-[10px] text-muted-foreground font-mono">#</span>
+									<input
+										type="number"
+										min={0}
+										max={15}
+										value={s.sensorIndex}
+										title="Firmware sensor index — must match position in kSensors[] in your .ino file"
+										className="w-8 text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring text-center"
+										onChange={(e) => {
+											const v = parseInt(e.target.value);
+											if (!isNaN(v) && v >= 0 && v <= 15) {
+												updateSensor(i, { sensorIndex: v });
+											}
+										}}
+									/>
+								</div>
 								{/* Remove button */}
 								{sensors.length > 1 && (
 									<button
@@ -459,7 +476,7 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 										<div key={i} className="grid grid-cols-[1fr_2.5rem_2.5rem] gap-1 items-center">
 											<div className="flex items-center gap-1 min-w-0">
 												<div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: s.color }}/>
-												<span className="text-[11px] text-muted-foreground truncate">{s.label} <span className="font-mono opacity-50">#{i}</span></span>
+												<span className="text-[11px] text-muted-foreground truncate">{s.label} <span className="font-mono opacity-50">#{s.sensorIndex}</span></span>
 											</div>
 											<input
 												type="number" min={0} max={63} value={s.ledOffset}
