@@ -89,81 +89,108 @@ function generateMockTimeSeriesData(timeWindow: number): Array<Array<{ value: nu
 /*===========================================================================*/
 // LED PANEL — types and helpers
 
-const NUM_PANELS = 4;
-const PANEL_NAMES = ["Left", "Down", "Up", "Right"] as const;
-const DEFAULT_PANEL_COLORS: string[] = [
-	"#e84040",  // Left
-	"#4a7fff",  // Down
-	"#ff9020",  // Up
-	"#3fcf6e",  // Right
-	"#cc44ff",  // Up 2 / extra
-	"#00ddcc",  // Down 2 / extra
-	"#ffdd00",  // extra
-	"#ff6688",  // extra
-];
-const LS_CUSTOM_PRESETS_KEY = "webfsr_led_custom_presets";
-const LS_SENSOR_MAP_KEY = "webfsr_led_sensor_map";
+const LS_CUSTOM_PRESETS_KEY = "webfsr_led_presets_v5";
+const LS_SENSOR_MAP_KEY     = "webfsr_led_sensors_v5";
 
-// One entry per physical FSR sensor zone
+// One entry per FSR sensor — fully flexible, no hardcoded directions
 interface SensorZone {
-	sensorIndex: number;  // 0-based, matches WebFSR sensor order
-	panelIndex: number;   // which arrow panel (0=Left,1=Down,2=Up,3=Right)
-	ledCount: number;     // how many LEDs this zone controls
-	ledOffset: number;    // starting LED index within the panel strip
+	sensorIndex: number;  // 0-based firmware sensor index
+	label: string;        // user-editable name e.g. "Left", "Up 2"
+	color: string;        // hex color e.g. "#ff0000"
+	ledCount: number;
+	ledOffset: number;
 }
 
 interface LedPreset {
 	name: string;
-	colors: string[];
+	sensors: SensorZone[];
 	brightness: number;
 }
 
-const DEFAULT_SENSOR_MAP: SensorZone[] = [
-	{ sensorIndex: 0, panelIndex: 0, ledCount: 4, ledOffset: 0 },
-	{ sensorIndex: 1, panelIndex: 1, ledCount: 4, ledOffset: 0 },
-	{ sensorIndex: 2, panelIndex: 2, ledCount: 4, ledOffset: 0 },
-	{ sensorIndex: 3, panelIndex: 3, ledCount: 4, ledOffset: 0 },
+const DEFAULT_COLORS = [
+	"#e84040", "#4a7fff", "#ff9020", "#3fcf6e",
+	"#cc44ff", "#00ddcc", "#ffdd00", "#ff6688",
 ];
+const DEFAULT_LABELS = ["Left", "Down", "Up", "Right", "Up 2", "Down 2", "Extra 1", "Extra 2"];
 
-const BUILTIN_PRESETS: LedPreset[] = [
-	{ name: "Default", colors: ["#e84040", "#4a7fff", "#ff9020", "#3fcf6e"], brightness: 200 },
-	{ name: "DDR",     colors: ["#ffcc00", "#0088ff", "#ff2288", "#00ddaa"], brightness: 200 },
-	{ name: "White",   colors: ["#ffffff", "#ffffff", "#ffffff", "#ffffff"], brightness: 150 },
-	{ name: "Purple",  colors: ["#9966ff", "#cc44ff", "#7744ff", "#bb55ff"], brightness: 200 },
-	{ name: "Fire",    colors: ["#ff2200", "#ff6600", "#ffaa00", "#ffdd00"], brightness: 200 },
-	{ name: "Ice",     colors: ["#aaddff", "#66bbff", "#2299ff", "#0055cc"], brightness: 180 },
-];
-
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-	const clean = hex.replace("#", "");
-	return {
-		r: parseInt(clean.slice(0, 2), 16),
-		g: parseInt(clean.slice(2, 4), 16),
-		b: parseInt(clean.slice(4, 6), 16),
-	};
+function makeDefaultSensors(count: number): SensorZone[] {
+	return Array.from({ length: count }, (_, i) => ({
+		sensorIndex: i,
+		label: DEFAULT_LABELS[i] ?? `S${i + 1}`,
+		color: DEFAULT_COLORS[i % DEFAULT_COLORS.length],
+		ledCount: 4,
+		ledOffset: i * 4,
+	}));
 }
 
+const BUILTIN_PRESETS: LedPreset[] = [
+	{
+		name: "Default 4",
+		brightness: 60,
+		sensors: makeDefaultSensors(4),
+	},
+	{
+		name: "Default 6",
+		brightness: 60,
+		sensors: makeDefaultSensors(6),
+	},
+	{
+		name: "DDR",
+		brightness: 60,
+		sensors: [
+			{ sensorIndex:0, label:"Left",  color:"#ffcc00", ledCount:4, ledOffset:0  },
+			{ sensorIndex:1, label:"Down",  color:"#0088ff", ledCount:4, ledOffset:4  },
+			{ sensorIndex:2, label:"Up",    color:"#ff2288", ledCount:4, ledOffset:8  },
+			{ sensorIndex:3, label:"Right", color:"#00ddaa", ledCount:4, ledOffset:12 },
+		],
+	},
+	{
+		name: "Fire",
+		brightness: 60,
+		sensors: [
+			{ sensorIndex:0, label:"Left",  color:"#ff2200", ledCount:4, ledOffset:0  },
+			{ sensorIndex:1, label:"Down",  color:"#ff6600", ledCount:4, ledOffset:4  },
+			{ sensorIndex:2, label:"Up",    color:"#ffaa00", ledCount:4, ledOffset:8  },
+			{ sensorIndex:3, label:"Right", color:"#ffdd00", ledCount:4, ledOffset:12 },
+		],
+	},
+	{
+		name: "Ice",
+		brightness: 60,
+		sensors: [
+			{ sensorIndex:0, label:"Left",  color:"#aaddff", ledCount:4, ledOffset:0  },
+			{ sensorIndex:1, label:"Down",  color:"#66bbff", ledCount:4, ledOffset:4  },
+			{ sensorIndex:2, label:"Up",    color:"#2299ff", ledCount:4, ledOffset:8  },
+			{ sensorIndex:3, label:"Right", color:"#0055cc", ledCount:4, ledOffset:12 },
+		],
+	},
+];
+
+function hexToRgb(hex: string) {
+	const c = hex.replace("#", "");
+	return { r: parseInt(c.slice(0,2),16), g: parseInt(c.slice(2,4),16), b: parseInt(c.slice(4,6),16) };
+}
+
+function loadSensors(): SensorZone[] {
+	try {
+		const raw = localStorage.getItem(LS_SENSOR_MAP_KEY);
+		return raw ? (JSON.parse(raw) as SensorZone[]) : makeDefaultSensors(4);
+	} catch { return makeDefaultSensors(4); }
+}
+function saveSensors(s: SensorZone[]) {
+	localStorage.setItem(LS_SENSOR_MAP_KEY, JSON.stringify(s));
+}
 function loadCustomPresets(): LedPreset[] {
 	try {
 		const raw = localStorage.getItem(LS_CUSTOM_PRESETS_KEY);
 		return raw ? (JSON.parse(raw) as LedPreset[]) : [];
 	} catch { return []; }
 }
-function saveCustomPresets(presets: LedPreset[]) {
-	localStorage.setItem(LS_CUSTOM_PRESETS_KEY, JSON.stringify(presets));
-}
-function loadSensorMap(): SensorZone[] {
-	try {
-		const raw = localStorage.getItem(LS_SENSOR_MAP_KEY);
-		return raw ? (JSON.parse(raw) as SensorZone[]) : DEFAULT_SENSOR_MAP;
-	} catch { return DEFAULT_SENSOR_MAP; }
-}
-function saveSensorMap(map: SensorZone[]) {
-	localStorage.setItem(LS_SENSOR_MAP_KEY, JSON.stringify(map));
+function saveCustomPresets(p: LedPreset[]) {
+	localStorage.setItem(LS_CUSTOM_PRESETS_KEY, JSON.stringify(p));
 }
 
 /*===========================================================================*/
-// LED Section component
 
 interface LedSectionProps {
 	connected: boolean;
@@ -172,104 +199,133 @@ interface LedSectionProps {
 }
 
 function LedSection({ connected, sendText }: LedSectionProps) {
-	const [panelColors, setPanelColors] = useState<string[]>(DEFAULT_PANEL_COLORS);
+	const [sensors, setSensors]       = useState<SensorZone[]>(loadSensors);
 	const [brightness, setBrightness] = useState<number>(60);
-	const [ledOpen, setLedOpen] = useState<boolean>(true);
-	const [mappingOpen, setMappingOpen] = useState<boolean>(false);
-
-	// Custom presets
+	const [ledOpen, setLedOpen]       = useState<boolean>(true);
+	const [zoneOpen, setZoneOpen]     = useState<boolean>(false);
 	const [customPresets, setCustomPresets] = useState<LedPreset[]>(loadCustomPresets);
 	const [newPresetName, setNewPresetName] = useState<string>("");
 	const [showSaveInput, setShowSaveInput] = useState<boolean>(false);
 
-	// Sensor mapping
-	const [sensorMap, setSensorMap] = useState<SensorZone[]>(loadSensorMap);
-
-	// Track which zones are currently lit so we can send off when they release
-	const litZonesRef = useRef<Set<number>>(new Set());
-
-	// On first connect: query pad LED config and sync zone mapping
+	// Query firmware on connect
 	const hasQueriedRef = useRef(false);
 	useEffect(() => {
 		if (connected && !hasQueriedRef.current) {
 			hasQueriedRef.current = true;
 			setTimeout(() => {
 				sendText("q\n");
-				// Sync saved zone mapping to firmware
-				sensorMap.forEach((zone) => {
-					sendText(`z ${zone.sensorIndex} ${zone.ledOffset} ${zone.ledCount}\n`);
+				sensors.forEach((s) => {
+					sendText(`z ${s.sensorIndex} ${s.ledOffset} ${s.ledCount}\n`);
+					const { r, g, b } = hexToRgb(s.color);
+					sendText(`l ${s.sensorIndex} ${r} ${g} ${b}\n`);
 				});
 			}, 400);
 		}
 		if (!connected) hasQueriedRef.current = false;
 	}, [connected, sendText]);
 
-	// Note: LED on/off on press is handled entirely by the firmware.
-	// The web app only sends color and brightness commands.
-	// The sensor mapping UI is saved locally so users can document their setup.
-
+	// Parse firmware "c" response — 5 values per sensor: r g b offset count, then brightness
 	const handleLedLine = (line: string) => {
 		if (!line.startsWith("c")) return false;
 		const nums = line.slice(1).trim().split(/\s+/).map(Number);
-		if (nums.length < 13) return false;
-		// Parse colors for all sensors (5 values each: r g b offset count)
-		// Format: c r g b off cnt  r g b off cnt ... brightness
-		const numSensors = Math.floor((nums.length - 1) / 5);
-		if (numSensors > 0) {
-			const newColors: string[] = [];
-			for (let i = 0; i < numSensors; i++) {
-				const r = nums[i * 5], g = nums[i * 5 + 1], b = nums[i * 5 + 2];
-				newColors.push(`#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`);
+		if (nums.length < 6) return false;
+		const count = Math.floor((nums.length - 1) / 5);
+		if (count < 1) return false;
+		setSensors(prev => {
+			const updated = [...prev];
+			for (let i = 0; i < count; i++) {
+				const r = nums[i*5], g = nums[i*5+1], b = nums[i*5+2];
+				const hex = "#" + [r,g,b].map(v => v.toString(16).padStart(2,"0")).join("");
+				const offset = nums[i*5+3];
+				const cnt    = nums[i*5+4];
+				if (i < updated.length) {
+					updated[i] = { ...updated[i], color: hex, ledOffset: offset, ledCount: cnt };
+				} else {
+					updated.push({
+						sensorIndex: i,
+						label: DEFAULT_LABELS[i] ?? `S${i+1}`,
+						color: hex,
+						ledOffset: offset,
+						ledCount: cnt,
+					});
+				}
 			}
-			setPanelColors(prev => {
-				const merged = [...prev];
-				newColors.forEach((c, i) => { merged[i] = c; });
-				return merged;
-			});
-			setBrightness(nums[nums.length - 1]);
-		} else {
-			// Fallback: old format r g b per panel
-			const newColors: string[] = [];
-			for (let i = 0; i < NUM_PANELS; i++) {
-				const r = nums[i * 3], g = nums[i * 3 + 1], b = nums[i * 3 + 2];
-				newColors.push(`#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`);
-			}
-			setPanelColors(newColors);
-			setBrightness(nums[12]);
-		}
+			saveSensors(updated);
+			return updated;
+		});
+		setBrightness(nums[nums.length - 1]);
 		return true;
 	};
 
-	const sendColor = (index: number, hex: string) => {
+	const sendColor = (i: number, hex: string) => {
 		if (!connected) return;
 		const { r, g, b } = hexToRgb(hex);
-		sendText(`l ${index} ${r} ${g} ${b}\n`);
+		sendText(`l ${i} ${r} ${g} ${b}\n`);
 	};
-
+	const sendZone = (i: number, offset: number, count: number) => {
+		if (!connected) return;
+		sendText(`z ${i} ${offset} ${count}\n`);
+	};
 	const sendBrightness = (val: number) => {
 		if (!connected) return;
 		sendText(`b ${val}\n`);
 	};
 
-	const applyPreset = (preset: LedPreset) => {
-		setPanelColors([...preset.colors]);
-		setBrightness(preset.brightness);
-		preset.colors.forEach((c, i) => sendColor(i, c));
-		sendBrightness(preset.brightness);
+	const updateSensor = (i: number, patch: Partial<SensorZone>) => {
+		const updated = sensors.map((s, idx) => idx === i ? { ...s, ...patch } : s);
+		setSensors(updated);
+		saveSensors(updated);
+		const s = updated[i];
+		if ("color" in patch) sendColor(i, s.color);
+		if ("ledOffset" in patch || "ledCount" in patch) sendZone(i, s.ledOffset, s.ledCount);
 	};
 
-	const onColorChange = (index: number, hex: string) => {
-		const next = [...panelColors];
-		next[index] = hex;
-		setPanelColors(next);
+	const addSensor = () => {
+		const i = sensors.length;
+		const lastOffset = sensors.length > 0
+			? sensors[sensors.length-1].ledOffset + sensors[sensors.length-1].ledCount
+			: 0;
+		const newSensor: SensorZone = {
+			sensorIndex: i,
+			label: DEFAULT_LABELS[i] ?? `S${i+1}`,
+			color: DEFAULT_COLORS[i % DEFAULT_COLORS.length],
+			ledOffset: lastOffset,
+			ledCount: 4,
+		};
+		const updated = [...sensors, newSensor];
+		setSensors(updated);
+		saveSensors(updated);
+		sendColor(i, newSensor.color);
+		sendZone(i, newSensor.ledOffset, newSensor.ledCount);
 	};
-	const onColorCommit = (index: number, hex: string) => sendColor(index, hex);
-	const onBrightnessCommit = (val: number) => { setBrightness(val); sendBrightness(val); };
+
+	const removeSensor = (i: number) => {
+		if (sensors.length <= 1) return;
+		const updated = sensors.filter((_, idx) => idx !== i).map((s, idx) => ({ ...s, sensorIndex: idx }));
+		setSensors(updated);
+		saveSensors(updated);
+		// Re-sync all remaining sensors
+		updated.forEach((s) => {
+			sendColor(s.sensorIndex, s.color);
+			sendZone(s.sensorIndex, s.ledOffset, s.ledCount);
+		});
+	};
+
+	const applyPreset = (preset: LedPreset) => {
+		setSensors([...preset.sensors]);
+		saveSensors([...preset.sensors]);
+		setBrightness(preset.brightness);
+		preset.sensors.forEach((s) => {
+			sendColor(s.sensorIndex, s.color);
+			sendZone(s.sensorIndex, s.ledOffset, s.ledCount);
+		});
+		sendBrightness(preset.brightness);
+	};
 
 	const saveCurrentAsPreset = () => {
 		const name = newPresetName.trim();
 		if (!name) return;
-		const preset: LedPreset = { name, colors: [...panelColors], brightness };
+		const preset: LedPreset = { name, sensors: [...sensors], brightness };
 		const updated = [...customPresets, preset];
 		setCustomPresets(updated);
 		saveCustomPresets(updated);
@@ -277,56 +333,21 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 		setShowSaveInput(false);
 	};
 
-	const deleteCustomPreset = (index: number) => {
-		const updated = customPresets.filter((_, i) => i !== index);
+	const deleteCustomPreset = (i: number) => {
+		const updated = customPresets.filter((_, idx) => idx !== i);
 		setCustomPresets(updated);
 		saveCustomPresets(updated);
 	};
 
-	// Sensor map helpers
-	// Send "z <sensorIndex> <offset> <count>" to firmware for a given zone
-	const sendZoneCommand = (zone: SensorZone) => {
-		if (!connected) return;
-		sendText(`z ${zone.sensorIndex} ${zone.ledOffset} ${zone.ledCount}\n`);
-	};
-
-	const updateZone = (idx: number, field: keyof SensorZone, value: number) => {
-		const updated = sensorMap.map((z, i) => i === idx ? { ...z, [field]: value } : z);
-		setSensorMap(updated);
-		saveSensorMap(updated);
-		// Send z command when zone geometry changes
-		if (field === "ledCount" || field === "ledOffset" || field === "panelIndex") {
-			sendZoneCommand(updated[idx]);
-		}
-	};
-
-	const addZone = () => {
-		const newZone: SensorZone = { sensorIndex: sensorMap.length, panelIndex: 0, ledCount: 2, ledOffset: 0 };
-		const updated = [...sensorMap, newZone];
-		setSensorMap(updated);
-		saveSensorMap(updated);
-		sendZoneCommand(newZone);
-	};
-
-	const removeZone = (idx: number) => {
-		const updated = sensorMap.filter((_, i) => i !== idx);
-		setSensorMap(updated);
-		saveSensorMap(updated);
-	};
-
-	const resetMap = () => {
-		setSensorMap(DEFAULT_SENSOR_MAP);
-		saveSensorMap(DEFAULT_SENSOR_MAP);
-		DEFAULT_SENSOR_MAP.forEach((zone) => sendZoneCommand(zone));
-	};
-
 	(LedSection as unknown as { _handleLine: (l: string) => boolean })._handleLine = handleLedLine;
+
+	const totalLeds = Math.max(16, ...sensors.map(s => s.ledOffset + s.ledCount));
 
 	return (
 		<div className="p-3 border rounded bg-white dark:bg-neutral-900">
 			<button
 				className="flex items-center justify-between w-full text-left mb-0"
-				onClick={() => setLedOpen((o) => !o)}
+				onClick={() => setLedOpen(o => !o)}
 			>
 				<span className="text-sm font-semibold">LED Panels</span>
 				<span className="text-xs text-muted-foreground">{ledOpen ? "▲" : "▼"}</span>
@@ -335,37 +356,50 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 			{ledOpen && (
 				<div className="mt-3 flex flex-col gap-3">
 
-					{/* Per-panel color pickers */}
-					<div className="grid grid-cols-2 gap-2">
-						{sensorMap.map((zone, i) => (
-							<div key={name} className="flex flex-col gap-1">
-								<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
-									{name}
-								</label>
-								<div className="flex items-center gap-2">
-									<div
-										className="w-7 h-7 rounded-md border border-border shrink-0 cursor-pointer relative overflow-hidden"
-										style={{ background: panelColors[i] }}
-									>
-										<input
-											type="color"
-											value={panelColors[i]}
-											className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
-											onChange={(e) => onColorChange(i, e.target.value)}
-											onBlur={(e) => onColorCommit(i, e.target.value)}
-										/>
-									</div>
+					{/* Per-sensor rows */}
+					<div className="flex flex-col gap-2">
+						{sensors.map((s, i) => (
+							<div key={i} className="flex items-center gap-2">
+								{/* Color swatch */}
+								<div
+									className="w-7 h-7 rounded-md border border-border shrink-0 cursor-pointer relative overflow-hidden"
+									style={{ background: s.color }}
+								>
 									<input
-										type="text"
-										value={panelColors[i].toUpperCase()}
-										maxLength={7}
-										className="flex-1 text-xs font-mono bg-transparent border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring min-w-0"
-										onChange={(e) => { if (/^#[0-9a-fA-F]{6}$/.test(e.target.value)) onColorChange(i, e.target.value); }}
-										onBlur={(e) => { if (/^#[0-9a-fA-F]{6}$/.test(e.target.value)) onColorCommit(i, e.target.value); }}
+										type="color"
+										value={s.color}
+										className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+										onChange={(e) => updateSensor(i, { color: e.target.value })}
 									/>
 								</div>
+								{/* Label input */}
+								<input
+									type="text"
+									value={s.label}
+									maxLength={12}
+									className="flex-1 text-xs bg-transparent border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring min-w-0"
+									onChange={(e) => updateSensor(i, { label: e.target.value })}
+									placeholder={`S${i}`}
+								/>
+								{/* Sensor index badge */}
+								<span className="text-[10px] font-mono text-muted-foreground shrink-0">#{i}</span>
+								{/* Remove button */}
+								{sensors.length > 1 && (
+									<button
+										onClick={() => removeSensor(i)}
+										className="text-xs text-muted-foreground hover:text-destructive transition-colors shrink-0"
+										title="Remove sensor"
+									>×</button>
+								)}
 							</div>
 						))}
+						{/* Add sensor button */}
+						<button
+							onClick={addSensor}
+							className="w-full text-xs py-1.5 rounded border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-border-secondary transition-colors"
+						>
+							+ Add FSR sensor
+						</button>
 					</div>
 
 					{/* Brightness */}
@@ -378,96 +412,68 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 							type="range" min={0} max={255} step={1} value={brightness}
 							className="w-full h-1.5 accent-foreground cursor-pointer"
 							onChange={(e) => setBrightness(Number(e.target.value))}
-							onMouseUp={(e) => onBrightnessCommit(Number((e.target as HTMLInputElement).value))}
-							onTouchEnd={(e) => onBrightnessCommit(Number((e.target as HTMLInputElement).value))}
+							onMouseUp={(e) => { setBrightness(Number((e.target as HTMLInputElement).value)); sendBrightness(Number((e.target as HTMLInputElement).value)); }}
+							onTouchEnd={(e) => { setBrightness(Number((e.target as HTMLInputElement).value)); sendBrightness(Number((e.target as HTMLInputElement).value)); }}
 						/>
 					</div>
 
-					{/* Sensor Mapping */}
+					{/* LED Zone per sensor */}
 					<div className="flex flex-col gap-1 border border-border rounded p-2">
 						<button
 							className="flex items-center justify-between w-full text-left"
-							onClick={() => setMappingOpen((o) => !o)}
+							onClick={() => setZoneOpen(o => !o)}
 						>
-							<span className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">Sensor → LED Mapping</span>
-							<span className="text-xs text-muted-foreground">{mappingOpen ? "▲" : "▼"}</span>
+							<span className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">LED Zones</span>
+							<span className="text-xs text-muted-foreground">{zoneOpen ? "▲" : "▼"}</span>
 						</button>
 
-						{mappingOpen && (
+						{zoneOpen && (
 							<div className="mt-2 flex flex-col gap-2">
 								<p className="text-[11px] text-muted-foreground">
-									Map each FSR sensor to a panel and set how many LEDs it controls.
+									Offset = first LED on the strip (0-based). Count = how many LEDs to light.
 								</p>
 
-								{/* Zone rows */}
-								<div className="flex flex-col gap-1.5">
-									{/* Header */}
-									<div className="grid grid-cols-[1.5rem_2.5rem_3.5rem_2.5rem_3rem_1.2rem] gap-1 text-[10px] text-muted-foreground font-medium uppercase tracking-wide px-0.5">
-										<span>#</span>
-										<span>FSR</span>
-										<span>Panel</span>
-										<span>LEDs</span>
-										<span>Offset</span>
-										<span></span>
-									</div>
-
-									{sensorMap.map((zone, idx) => (
-										<div key={idx} className="grid grid-cols-[1.5rem_2.5rem_3.5rem_2.5rem_3rem_1.2rem] gap-1 items-center">
-											<span className="text-[11px] text-muted-foreground text-center">{idx + 1}</span>
-											{/* Sensor index */}
-											<input
-												type="number" min={0} max={15} value={zone.sensorIndex}
-												className="text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring text-center"
-												onChange={(e) => updateZone(idx, "sensorIndex", parseInt(e.target.value) || 0)}
-											/>
-											{/* Panel dropdown */}
-											<select
-												value={zone.panelIndex}
-												className="text-xs bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring"
-												onChange={(e) => updateZone(idx, "panelIndex", parseInt(e.target.value))}
+								{/* Strip preview */}
+								<div className="flex gap-0.5 flex-wrap">
+									{Array.from({ length: totalLeds }, (_, li) => {
+										const owner = sensors.findIndex(s => li >= s.ledOffset && li < s.ledOffset + s.ledCount);
+										return (
+											<div
+												key={li}
+												className="w-4 h-4 rounded-sm border border-border flex items-center justify-center"
+												style={{ background: owner >= 0 ? sensors[owner].color : "transparent" }}
+												title={`LED ${li}${owner >= 0 ? ` → ${sensors[owner].label}` : ""}`}
 											>
-												{PANEL_NAMES.map((n, pi) => (
-													<option key={pi} value={pi}>{n}</option>
-												))}
-											</select>
-											{/* LED count */}
+												<span className="text-[8px] text-white/60 font-mono leading-none">{li}</span>
+											</div>
+										);
+									})}
+								</div>
+
+								{/* Zone inputs */}
+								<div className="flex flex-col gap-1.5">
+									<div className="grid grid-cols-[1fr_2.5rem_2.5rem] gap-1 text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
+										<span>Sensor</span><span className="text-center">Offset</span><span className="text-center">Count</span>
+									</div>
+									{sensors.map((s, i) => (
+										<div key={i} className="grid grid-cols-[1fr_2.5rem_2.5rem] gap-1 items-center">
+											<div className="flex items-center gap-1 min-w-0">
+												<div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: s.color }}/>
+												<span className="text-[11px] text-muted-foreground truncate">{s.label} <span className="font-mono opacity-50">#{i}</span></span>
+											</div>
 											<input
-												type="number" min={1} max={64} defaultValue={zone.ledCount}
-												key={`count-${idx}-${zone.ledCount}`}
+												type="number" min={0} max={63} value={s.ledOffset}
 												className="text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring text-center"
-												onBlur={(e) => updateZone(idx, "ledCount", parseInt(e.target.value) || 1)}
-												onKeyDown={(e) => { if (e.key === "Enter") updateZone(idx, "ledCount", parseInt((e.target as HTMLInputElement).value) || 1); }}
+												onChange={(e) => { const v = parseInt(e.target.value); if (!isNaN(v)) updateSensor(i, { ledOffset: Math.max(0, Math.min(63, v)) }); }}
 											/>
-											{/* LED offset */}
 											<input
-												type="number" min={0} max={63} defaultValue={zone.ledOffset}
-												key={`offset-${idx}-${zone.ledOffset}`}
+												type="number" min={1} max={32} value={s.ledCount}
 												className="text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring text-center"
-												onBlur={(e) => updateZone(idx, "ledOffset", parseInt(e.target.value) || 0)}
-												onKeyDown={(e) => { if (e.key === "Enter") updateZone(idx, "ledOffset", parseInt((e.target as HTMLInputElement).value) || 0); }}
+												onChange={(e) => { const v = parseInt(e.target.value); if (!isNaN(v)) updateSensor(i, { ledCount: Math.max(1, Math.min(32, v)) }); }}
 											/>
-											{/* Delete */}
-											<button
-												onClick={() => removeZone(idx)}
-												className="text-xs text-muted-foreground hover:text-destructive transition-colors text-center"
-												title="Remove zone"
-											>×</button>
 										</div>
 									))}
 								</div>
-
-								<div className="flex gap-1 mt-1">
-									<Button variant="outline" size="sm" className="text-xs flex-1" onClick={addZone}>
-										+ Add zone
-									</Button>
-									<Button variant="outline" size="sm" className="text-xs flex-1" onClick={resetMap}>
-										Reset
-									</Button>
-								</div>
-
-								<p className="text-[10px] text-muted-foreground">
-									FSR = sensor number (0-based). Offset = first LED in this zone on the strip.
-								</p>
 							</div>
 						)}
 					</div>
@@ -483,8 +489,8 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 									className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-border bg-transparent hover:bg-accent hover:text-accent-foreground transition-colors"
 								>
 									<span className="flex gap-0.5">
-										{preset.colors.map((c, ci) => (
-											<span key={ci} className="inline-block w-2 h-2 rounded-full" style={{ background: c }} />
+										{preset.sensors.slice(0, 6).map((s, ci) => (
+											<span key={ci} className="inline-block w-2 h-2 rounded-full" style={{ background: s.color }}/>
 										))}
 									</span>
 									{preset.name}
@@ -499,12 +505,11 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 							<span className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">My presets</span>
 							<button
 								className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-								onClick={() => setShowSaveInput((v) => !v)}
+								onClick={() => setShowSaveInput(v => !v)}
 							>
 								{showSaveInput ? "Cancel" : "+ Save current"}
 							</button>
 						</div>
-
 						{showSaveInput && (
 							<div className="flex gap-1 mt-1">
 								<input
@@ -520,31 +525,24 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 								</Button>
 							</div>
 						)}
-
 						{customPresets.length === 0 && !showSaveInput && (
-							<p className="text-[11px] text-muted-foreground italic">
-								No custom presets yet — set your colors and click "+ Save current"
-							</p>
+							<p className="text-[11px] text-muted-foreground italic">No custom presets yet.</p>
 						)}
 						<div className="flex flex-wrap gap-1">
 							{customPresets.map((preset, idx) => (
 								<div key={idx} className="flex items-center gap-0.5">
-									<button
-										onClick={() => applyPreset(preset)}
-										className="flex items-center gap-1 px-2 py-1 text-xs rounded-l border border-border bg-transparent hover:bg-accent hover:text-accent-foreground transition-colors"
-									>
+									<button onClick={() => applyPreset(preset)}
+										className="flex items-center gap-1 px-2 py-1 text-xs rounded-l border border-border bg-transparent hover:bg-accent hover:text-accent-foreground transition-colors">
 										<span className="flex gap-0.5">
-											{preset.colors.map((c, ci) => (
-												<span key={ci} className="inline-block w-2 h-2 rounded-full" style={{ background: c }} />
+											{preset.sensors.slice(0,6).map((s, ci) => (
+												<span key={ci} className="inline-block w-2 h-2 rounded-full" style={{ background: s.color }}/>
 											))}
 										</span>
 										{preset.name}
 									</button>
-									<button
-										onClick={() => deleteCustomPreset(idx)}
+									<button onClick={() => deleteCustomPreset(idx)}
 										className="px-1.5 py-1 text-xs rounded-r border border-l-0 border-border bg-transparent hover:bg-destructive hover:text-destructive-foreground transition-colors text-muted-foreground"
-										title="Delete preset"
-									>×</button>
+										title="Delete preset">×</button>
 								</div>
 							))}
 						</div>
