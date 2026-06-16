@@ -164,7 +164,7 @@ interface LedSectionProps {
 
 function LedSection({ connected, sendText }: LedSectionProps) {
 	const [panelColors, setPanelColors] = useState<string[]>(DEFAULT_PANEL_COLORS);
-	const [brightness, setBrightness] = useState<number>(200);
+	const [brightness, setBrightness] = useState<number>(60);
 	const [ledOpen, setLedOpen] = useState<boolean>(true);
 	const [mappingOpen, setMappingOpen] = useState<boolean>(false);
 
@@ -188,7 +188,7 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 				sendText("q\n");
 				// Sync saved zone mapping to firmware
 				sensorMap.forEach((zone) => {
-					sendText(`z ${zone.panelIndex} ${zone.ledOffset} ${zone.ledCount}\n`);
+					sendText(`z ${zone.sensorIndex} ${zone.ledOffset} ${zone.ledCount}\n`);
 				});
 			}, 400);
 		}
@@ -260,7 +260,7 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 	// Send "z <panel> <offset> <count>" to firmware for a given zone
 	const sendZoneCommand = (zone: SensorZone) => {
 		if (!connected) return;
-		sendText(`z ${zone.panelIndex} ${zone.ledOffset} ${zone.ledCount}\n`);
+		sendText(`z ${zone.sensorIndex} ${zone.ledOffset} ${zone.ledCount}\n`);
 	};
 
 	const updateZone = (idx: number, field: keyof SensorZone, value: number) => {

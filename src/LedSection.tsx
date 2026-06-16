@@ -40,10 +40,10 @@ interface LedPreset {
 }
 
 const DEFAULT_ZONES: PanelZone[] = [
-  { ledOffset: 0, ledCount: 4 },
-  { ledOffset: 0, ledCount: 4 },
-  { ledOffset: 0, ledCount: 4 },
-  { ledOffset: 0, ledCount: 4 },
+  { ledOffset: 0,  ledCount: 8 },
+  { ledOffset: 8,  ledCount: 8 },
+  { ledOffset: 16, ledCount: 8 },
+  { ledOffset: 24, ledCount: 8 },
 ];
 
 const BUILTIN_PRESETS: LedPreset[] = [
@@ -173,12 +173,12 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 
   // Zone change handlers
   const onZoneChange = (index: number, field: keyof PanelZone, raw: number) => {
-    const LEDS_PER_PANEL = 4; // must match firmware
+    const LEDS_PER_PANEL = 16; // max LEDs per sensor zone
     let value = isNaN(raw) ? 0 : raw;
 
     // Clamp values
-    if (field === "ledOffset") value = Math.max(0, Math.min(LEDS_PER_PANEL - 1, value));
-    if (field === "ledCount")  value = Math.max(1, Math.min(LEDS_PER_PANEL, value));
+    if (field === "ledOffset") value = Math.max(0, Math.min(31, value));
+    if (field === "ledCount")  value = Math.max(1, Math.min(16, value));
 
     const updated = zones.map((z, i) => i === index ? { ...z, [field]: value } : z);
     setZones(updated);
@@ -306,12 +306,12 @@ function LedSection({ connected, sendText }: LedSectionProps) {
                 <div className="grid grid-cols-4 gap-1.5 mb-1">
                   {PANEL_NAMES.map((name, pi) => {
                     const zone = zones[pi];
-                    const LEDS_PER_PANEL = 4;
+                    const LEDS_PER_PANEL = Math.max(...zones.map(z => z.ledOffset + z.ledCount), 16);
                     return (
                       <div key={name} className="flex flex-col items-center gap-1">
                         <span className="text-[10px] text-muted-foreground">{name}</span>
                         <div className="flex gap-0.5">
-                          {Array.from({ length: LEDS_PER_PANEL }, (_, li) => {
+                          {Array.from({ length: Math.max(...zones.map(z => z.ledOffset + z.ledCount), 8) }, (_, li) => {
                             const active = li >= zone.ledOffset && li < zone.ledOffset + zone.ledCount;
                             return (
                               <div
@@ -338,12 +338,12 @@ function LedSection({ connected, sendText }: LedSectionProps) {
                     <div key={name} className="grid grid-cols-[3rem_1fr_1fr] gap-1 items-center">
                       <span className="text-[11px] text-muted-foreground">{name}</span>
                       <input
-                        type="number" min={0} max={3} value={zones[pi].ledOffset}
+                        type="number" min={0} max={31} value={zones[pi].ledOffset}
                         className="text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring text-center"
                         onChange={(e) => onZoneChange(pi, "ledOffset", parseInt(e.target.value))}
                       />
                       <input
-                        type="number" min={1} max={4} value={zones[pi].ledCount}
+                        type="number" min={1} max={16} value={zones[pi].ledCount}
                         className="text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring text-center"
                         onChange={(e) => onZoneChange(pi, "ledCount", parseInt(e.target.value))}
                       />
