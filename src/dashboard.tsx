@@ -91,7 +91,16 @@ function generateMockTimeSeriesData(timeWindow: number): Array<Array<{ value: nu
 
 const NUM_PANELS = 4;
 const PANEL_NAMES = ["Left", "Down", "Up", "Right"] as const;
-const DEFAULT_PANEL_COLORS: string[] = ["#e84040", "#4a7fff", "#ff9020", "#3fcf6e"];
+const DEFAULT_PANEL_COLORS: string[] = [
+	"#e84040",  // Left
+	"#4a7fff",  // Down
+	"#ff9020",  // Up
+	"#3fcf6e",  // Right
+	"#cc44ff",  // Up 2 / extra
+	"#00ddcc",  // Down 2 / extra
+	"#ffdd00",  // extra
+	"#ff6688",  // extra
+];
 const LS_CUSTOM_PRESETS_KEY = "webfsr_led_custom_presets";
 const LS_SENSOR_MAP_KEY = "webfsr_led_sensor_map";
 
@@ -203,13 +212,31 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 		if (!line.startsWith("c")) return false;
 		const nums = line.slice(1).trim().split(/\s+/).map(Number);
 		if (nums.length < 13) return false;
-		const newColors: string[] = [];
-		for (let i = 0; i < NUM_PANELS; i++) {
-			const r = nums[i * 3], g = nums[i * 3 + 1], b = nums[i * 3 + 2];
-			newColors.push(`#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`);
+		// Parse colors for all sensors (5 values each: r g b offset count)
+		// Format: c r g b off cnt  r g b off cnt ... brightness
+		const numSensors = Math.floor((nums.length - 1) / 5);
+		if (numSensors > 0) {
+			const newColors: string[] = [];
+			for (let i = 0; i < numSensors; i++) {
+				const r = nums[i * 5], g = nums[i * 5 + 1], b = nums[i * 5 + 2];
+				newColors.push(`#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`);
+			}
+			setPanelColors(prev => {
+				const merged = [...prev];
+				newColors.forEach((c, i) => { merged[i] = c; });
+				return merged;
+			});
+			setBrightness(nums[nums.length - 1]);
+		} else {
+			// Fallback: old format r g b per panel
+			const newColors: string[] = [];
+			for (let i = 0; i < NUM_PANELS; i++) {
+				const r = nums[i * 3], g = nums[i * 3 + 1], b = nums[i * 3 + 2];
+				newColors.push(`#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`);
+			}
+			setPanelColors(newColors);
+			setBrightness(nums[12]);
 		}
-		setPanelColors(newColors);
-		setBrightness(nums[12]);
 		return true;
 	};
 
@@ -257,7 +284,7 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 	};
 
 	// Sensor map helpers
-	// Send "z <panel> <offset> <count>" to firmware for a given zone
+	// Send "z <sensorIndex> <offset> <count>" to firmware for a given zone
 	const sendZoneCommand = (zone: SensorZone) => {
 		if (!connected) return;
 		sendText(`z ${zone.sensorIndex} ${zone.ledOffset} ${zone.ledCount}\n`);
@@ -310,7 +337,7 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 
 					{/* Per-panel color pickers */}
 					<div className="grid grid-cols-2 gap-2">
-						{PANEL_NAMES.map((name, i) => (
+						{sensorMap.map((zone, i) => (
 							<div key={name} className="flex flex-col gap-1">
 								<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
 									{name}
