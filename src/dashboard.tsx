@@ -281,6 +281,13 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 		if ("ledOffset" in patch || "ledCount" in patch || "sensorIndex" in patch) sendZone(s.sensorIndex, s.ledOffset, s.ledCount);
 	};
 
+	// Tell firmware how many sensors are active. Firmware auto-assigns
+	// default zones/colors for any newly added sensors and saves to EEPROM.
+	const sendSensorCount = (count: number) => {
+		if (!connected) return;
+		sendText(`n ${count}\n`);
+	};
+
 	const addSensor = () => {
 		const i = sensors.length;
 		const lastOffset = sensors.length > 0
@@ -296,8 +303,14 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 		const updated = [...sensors, newSensor];
 		setSensors(updated);
 		saveSensors(updated);
-		sendColor(i, newSensor.color);
-		sendZone(i, newSensor.ledOffset, newSensor.ledCount);
+		// Firmware handles assigning the new sensor's default zone/color itself
+		// and persists it to EEPROM -- then we override with our own defaults
+		// to keep dashboard and firmware in sync immediately.
+		sendSensorCount(updated.length);
+		setTimeout(() => {
+			sendColor(i, newSensor.color);
+			sendZone(i, newSensor.ledOffset, newSensor.ledCount);
+		}, 150);
 	};
 
 	const removeSensor = (i: number) => {
@@ -305,11 +318,15 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 		const updated = sensors.filter((_, idx) => idx !== i).map((s, idx) => ({ ...s, sensorIndex: idx }));
 		setSensors(updated);
 		saveSensors(updated);
-		// Re-sync all remaining sensors
-		updated.forEach((s) => {
-			sendColor(s.sensorIndex, s.color);
-			sendZone(s.sensorIndex, s.ledOffset, s.ledCount);
-		});
+		// Tell firmware the new count first (it turns off LEDs for removed
+		// sensors and persists to EEPROM), then re-sync remaining sensors.
+		sendSensorCount(updated.length);
+		setTimeout(() => {
+			updated.forEach((s) => {
+				sendColor(s.sensorIndex, s.color);
+				sendZone(s.sensorIndex, s.ledOffset, s.ledCount);
+			});
+		}, 150);
 	};
 
 	const applyPreset = (preset: LedPreset) => {
