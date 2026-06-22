@@ -6,7 +6,12 @@ export interface SerialData {
 	values: number[];
 }
 
-export const useSerialPort = (pollingRate = 100, useUnthrottledPolling = false, onValues?: (values: number[]) => void) => {
+export const useSerialPort = (
+	pollingRate = 100,
+	useUnthrottledPolling = false,
+	onValues?: (values: number[]) => void,
+	onLine?: (line: string) => void,
+) => {
 	const [port, setPort] = useState<SerialPort | null>(null);
 	const [connected, setConnected] = useState<boolean>(false);
 	const [connectionError, setConnectionError] = useState<string>("");
@@ -22,6 +27,7 @@ export const useSerialPort = (pollingRate = 100, useUnthrottledPolling = false, 
 	const pollingRateRef = useRef<number>(pollingRate);
 	const useUnthrottledPollingRef = useRef<boolean>(useUnthrottledPolling);
 	const onValuesRef = useRef<typeof onValues>(onValues);
+	const onLineRef = useRef<typeof onLine>(onLine);
 
 	// Command for requesting sensor data
 	const requestData = new Uint8Array([118, 10]);
@@ -42,7 +48,8 @@ export const useSerialPort = (pollingRate = 100, useUnthrottledPolling = false, 
 		pollingRateRef.current = pollingRate;
 		useUnthrottledPollingRef.current = useUnthrottledPolling;
 		onValuesRef.current = onValues;
-	}, [pollingRate, useUnthrottledPolling, onValues]);
+		onLineRef.current = onLine;
+	}, [pollingRate, useUnthrottledPolling, onValues, onLine]);
 
 	const connect = async () => {
 		if (!("serial" in navigator)) {
@@ -142,42 +149,88 @@ export const useSerialPort = (pollingRate = 100, useUnthrottledPolling = false, 
 								if (value) {
 									buffer += decoder.decode(value, { stream: true });
 
-									if (buffer.endsWith("\n")) {
-										// for now we ignore the returns of the new threshold value
-										// later on we should update the thresholds based on the real value
-										if (buffer.startsWith("v")) {
-											const values = buffer
-												.trim()
-												.split("\n")[0] // Take only the part before newline if it exists (i.e. thresholds also returned with sensor values are discarded)
-												.split(" ")
-												.slice(1)
-												.map((v) => Number.parseInt(v, 10));
+									// CRITICAL FIX: a single read() can return MULTIPLE complete
+									// lines at once (e.g. the firmware firing off several rapid
+									// "c" responses back-to-back from consecutive z/l commands).
+									// The old code only checked buffer.endsWith("\n") and then
+									// treated the ENTIRE accumulated buffer as one line -- if two
+									// "c" lines arrived in the same chunk, they'd get concatenated
+									// together and parsed as one garbled line with double the
+									// numbers, which is exactly what caused the LED Panels list to
+									// explode to 50+ entries after rapid sensor add/remove clicks.
+									//
+									// Fix: split on every "\n", process each complete line on its
+									// own, and keep any trailing partial line (no newline yet) in
+									// the buffer for the next read() call.
+									if (buffer.includes("\n")) {
+										const lines = buffer.split("\n");
+										// The last element is whatever's after the final "\n" --
+										// either empty string (chunk ended exactly on a newline) or
+										// a partial line still waiting for more data.
+										buffer = lines.pop() ?? "";
 
-											const numSensors = useDataStore.getState().numSensors;
-											if (numSensors === 0 && values.length > 0) setNumSensors(values.length);
+										let requestedThisBatch = false;
 
-											setLatestData({
-												rawData: buffer.trim(),
-												values,
-											});
+										for (const rawLine of lines) {
+											const trimmedLine = rawLine.trim();
+											if (trimmedLine.length === 0) continue;
 
-											// Notify callback on every read
-											try {
-												onValuesRef.current?.(values);
-											} catch (cbErr) {
-												console.error("onValues callback error", cbErr);
+											// for now we ignore the returns of the new threshold value
+											// later on we should update the thresholds based on the real value
+											if (trimmedLine.startsWith("v")) {
+												const values = trimmedLine
+													.split(" ")
+													.slice(1)
+													.map((v) => Number.parseInt(v, 10));
+
+												// Update numSensors whenever the firmware reports a different
+												// count than what we currently have -- not just the first time
+												// it goes from 0 to something. This lets the dashboard pick up
+												// FSRs added live via "n <count>" (e.g. clicking "+ Add FSR
+												// sensor") without requiring a full page reload to re-detect.
+												const numSensors = useDataStore.getState().numSensors;
+												if (values.length > 0 && values.length !== numSensors) {
+													setNumSensors(values.length);
+												}
+
+												setLatestData({
+													rawData: trimmedLine,
+													values,
+												});
+
+												// Notify callback on every read
+												try {
+													onValuesRef.current?.(values);
+												} catch (cbErr) {
+													console.error("onValues callback error", cbErr);
+												}
+
+												requestedThisBatch = true;
+											} else {
+												// Any non-"v" line (c ..., p ..., q_ok, z_ok, n_ok, s ..., t ...,
+												// y_err, etc.) is forwarded here so sections like LedSection and
+												// SensorTuningSection can parse their own config sync responses.
+												// Previously these lines were silently dropped, which meant
+												// "Sync from pad" never actually pulled real firmware state.
+												try {
+													onLineRef.current?.(trimmedLine);
+												} catch (cbErr) {
+													console.error("onLine callback error", cbErr);
+												}
 											}
 										}
 
-										buffer = "";
-
-										// Apply throttling if not using unthrottled polling
-										if (!useUnthrottledPollingRef.current && pollingRateRef.current > 0) {
-											const delayMs = 1000 / pollingRateRef.current;
-											await new Promise((resolve) => setTimeout(resolve, delayMs));
+										// Apply throttling if not using unthrottled polling. Only
+										// throttle/re-request once per batch of lines processed,
+										// not once per line, to avoid over-delaying when multiple
+										// lines legitimately arrive together.
+										if (requestedThisBatch) {
+											if (!useUnthrottledPollingRef.current && pollingRateRef.current > 0) {
+												const delayMs = 1000 / pollingRateRef.current;
+												await new Promise((resolve) => setTimeout(resolve, delayMs));
+											}
+											shouldRequestData = true;
 										}
-
-										shouldRequestData = true;
 									}
 								}
 							} catch (readErr) {

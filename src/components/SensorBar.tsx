@@ -31,6 +31,13 @@ interface SensorBarProps {
 	valueTextSize?: number;
 	valueTextColor?: string;
 	theme?: "light" | "dark";
+	// Optional second threshold line, used to show the Release (OFF)
+	// value alongside the main Trigger (ON) line when Advanced Sensor
+	// Tuning mode is active. Entirely optional -- omitting it (the
+	// default/casual-mode case) draws exactly as before, single line.
+	secondaryThreshold?: number;
+	secondaryThresholdLabel?: string;
+	secondaryThresholdColor?: string;
 }
 
 // Component for individual sensor bar
@@ -59,6 +66,9 @@ const SensorBar = ({
 	valueTextSize = 12,
 	valueTextColor,
 	theme,
+	secondaryThreshold,
+	secondaryThresholdLabel = "Release",
+	secondaryThresholdColor = "rgba(0, 200, 120, 0.9)",
 }: SensorBarProps) => {
 	const isDarkMode = theme === "dark";
 	const defaultBgColor = backgroundColor || (isDarkMode ? "#171717" : "white");
@@ -238,7 +248,8 @@ const SensorBar = ({
 
 		ctx.fillRect(0, height - barHeight, width, barHeight);
 
-		// Draw threshold line
+		// Draw threshold line (Trigger / ON in Advanced mode, or the
+		// single legacy threshold in casual mode)
 		const thresholdY = Math.round(height - (threshold / maxValue) * height);
 		ctx.beginPath();
 		ctx.moveTo(0, thresholdY);
@@ -246,6 +257,23 @@ const SensorBar = ({
 		ctx.strokeStyle = "rgba(255, 0, 0, 0.8)";
 		ctx.lineWidth = 2;
 		ctx.stroke();
+
+		// Draw secondary (Release / OFF) threshold line if provided. Dashed
+		// so it's visually distinct from the solid Trigger line even at a
+		// glance, and drawn in a different color (green by default) to
+		// match the Release slider's color in the Sensor Tuning panel.
+		let secondaryThresholdY: number | null = null;
+		if (secondaryThreshold !== undefined) {
+			secondaryThresholdY = Math.round(height - (secondaryThreshold / maxValue) * height);
+			ctx.beginPath();
+			ctx.setLineDash([5, 4]);
+			ctx.moveTo(0, secondaryThresholdY);
+			ctx.lineTo(width, secondaryThresholdY);
+			ctx.strokeStyle = secondaryThresholdColor;
+			ctx.lineWidth = 2;
+			ctx.stroke();
+			ctx.setLineDash([]); // reset so it doesn't leak into other strokes
+		}
 
 		// Draw border
 		ctx.strokeStyle = isDarkMode ? "rgba(255, 255, 255, 0.2)" : "rgba(0, 0, 0, 0.2)";
@@ -279,6 +307,28 @@ const SensorBar = ({
 
 			ctx.fillText(`${threshold}`, thresholdTextX, thresholdTextY);
 		}
+
+		// Draw secondary threshold value text + label, positioned to avoid
+		// overlapping the main threshold text when the two lines are close
+		// together (a common case right when someone starts narrowing the
+		// gap back down).
+		if (showThresholdText && secondaryThresholdY !== null && secondaryThreshold !== undefined) {
+			const labelsCollide = Math.abs(secondaryThresholdY - thresholdY) < thresholdTextSize + 4;
+			ctx.fillStyle = secondaryThresholdColor;
+			ctx.font = `${thresholdTextSize}px sans-serif`;
+			ctx.textAlign = "center";
+			// If close to the main line, push the label to the opposite
+			// side (top vs bottom) of its own line so the two labels don't
+			// stack directly on top of each other.
+			ctx.textBaseline = labelsCollide
+				? (secondaryThresholdY > thresholdY ? "top" : "bottom")
+				: "bottom";
+			const secondaryTextX = Math.floor(width / 2);
+			const secondaryTextY = labelsCollide
+				? secondaryThresholdY + (secondaryThresholdY > thresholdY ? 2 : -2)
+				: secondaryThresholdY - 2;
+			ctx.fillText(`${secondaryThresholdLabel}: ${secondaryThreshold}`, secondaryTextX, secondaryTextY);
+		}
 	}, [
 		dimensions,
 		value,
@@ -295,6 +345,9 @@ const SensorBar = ({
 		theme,
 		valueTextSize,
 		resolvedValueTextColor,
+		secondaryThreshold,
+		secondaryThresholdLabel,
+		secondaryThresholdColor,
 	]);
 
 	return (
@@ -307,7 +360,20 @@ const SensorBar = ({
 					{label}
 				</div>
 			)}
-			<div className={`relative flex-1 w-full flex flex-col ${!hideControls ? "mb-2" : ""} canvas-container min-h-[200px]`}>
+			{/*
+			  FIX: removed the hardcoded `min-h-[200px]` that used to be on this
+			  container. That min-height had nothing to do with how much space
+			  the parent grid actually allocates per sensor bar -- it was a
+			  fixed floor that could fight the parent's height, especially
+			  during the brief remount/measure gap when sensor count changes
+			  live (e.g. clicking "+ Add FSR sensor"). Before the
+			  ResizeObserver below has fired with real dimensions, this div
+			  would fall back to its min-height, visually overlapping
+			  whatever sits below the sensor bar row in the page layout.
+			  `flex-1` alone is enough to fill the available space correctly
+			  once the parent's height is established.
+			*/}
+			<div className={`relative flex-1 w-full flex flex-col ${!hideControls ? "mb-2" : ""} canvas-container`}>
 				<canvas
 					ref={canvasRef}
 					className={`border border-border rounded w-full h-full ${isLocked ? "cursor-not-allowed" : "cursor-pointer"}`}

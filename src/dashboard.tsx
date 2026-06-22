@@ -207,48 +207,67 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 	const [newPresetName, setNewPresetName] = useState<string>("");
 	const [showSaveInput, setShowSaveInput] = useState<boolean>(false);
 
-	// Query firmware on connect
+	// Query firmware on connect. We deliberately do NOT push our locally
+	// cached `sensors` back to the firmware here -- doing so used to race
+	// against the "c" response and could re-assert stale localStorage
+	// entries (e.g. 3 leftover sensors from earlier testing) even when
+	// only 1 FSR is actually wired up. The firmware's own "c" response is
+	// the single source of truth; handleLedLine() below truncates our
+	// local array to match it exactly.
 	const hasQueriedRef = useRef(false);
 	useEffect(() => {
 		if (connected && !hasQueriedRef.current) {
 			hasQueriedRef.current = true;
 			setTimeout(() => {
 				sendText("q\n");
-				sensors.forEach((s) => {
-					sendText(`z ${s.sensorIndex} ${s.ledOffset} ${s.ledCount}\n`);
-					const { r, g, b } = hexToRgb(s.color);
-					sendText(`l ${s.sensorIndex} ${r} ${g} ${b}\n`);
-				});
 			}, 400);
 		}
 		if (!connected) hasQueriedRef.current = false;
 	}, [connected, sendText]);
 
 	// Parse firmware "c" response — 5 values per sensor: r g b offset count, then brightness
+	// Firmware never has more than 8 sensors (MAX_SENSORS in fsr_*.ino).
+	// Used as a sanity cap below to reject obviously corrupted "c" lines
+	// rather than building a huge bogus sensor list from them.
+	const MAX_FIRMWARE_SENSORS = 8;
+
 	const handleLedLine = (line: string) => {
 		if (!line.startsWith("c")) return false;
 		const nums = line.slice(1).trim().split(/\s+/).map(Number);
 		if (nums.length < 6) return false;
 		const count = Math.floor((nums.length - 1) / 5);
 		if (count < 1) return false;
+		if (count > MAX_FIRMWARE_SENSORS) {
+			// Defense in depth: a real firmware response can never report
+			// more than MAX_SENSORS. Seeing more than that means this line
+			// got corrupted or multiple responses got concatenated together
+			// (e.g. two "c" lines merged without a clean newline between
+			// them, which is what caused the LED Panels list to explode to
+			// 50+ entries after rapid-fire serial writes). Drop it rather
+			// than building a sensor list from garbage data.
+			console.error(`Ignoring corrupted "c" line reporting ${count} sensors (max is ${MAX_FIRMWARE_SENSORS}):`, line);
+			return false;
+		}
 		setSensors(prev => {
-			const updated = [...prev];
+			// IMPORTANT: rebuild from scratch sized exactly to what the firmware
+			// reports, rather than only growing/overwriting a stale array. This
+			// prevents leftover sensors from old testing/localStorage (e.g. 30
+			// rows accumulated before useSerialPort forwarded "c" lines) from
+			// sticking around forever once the pad reports a smaller real count.
+			const updated: SensorZone[] = [];
 			for (let i = 0; i < count; i++) {
 				const r = nums[i*5], g = nums[i*5+1], b = nums[i*5+2];
 				const hex = "#" + [r,g,b].map(v => v.toString(16).padStart(2,"0")).join("");
 				const offset = nums[i*5+3];
 				const cnt    = nums[i*5+4];
-				if (i < updated.length) {
-					updated[i] = { ...updated[i], color: hex, ledOffset: offset, ledCount: cnt };
-				} else {
-					updated.push({
-						sensorIndex: i,
-						label: DEFAULT_LABELS[i] ?? `S${i+1}`,
-						color: hex,
-						ledOffset: offset,
-						ledCount: cnt,
-					});
-				}
+				const existing = prev[i];
+				updated.push({
+					sensorIndex: i,
+					label: existing?.label ?? DEFAULT_LABELS[i] ?? `S${i+1}`,
+					color: hex,
+					ledOffset: offset,
+					ledCount: cnt,
+				});
 			}
 			saveSensors(updated);
 			return updated;
@@ -320,11 +339,32 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 		saveSensors(updated);
 		// Tell firmware the new count first (it turns off LEDs for removed
 		// sensors and persists to EEPROM), then re-sync remaining sensors.
+		//
+		// IMPORTANT: each "z" and "l" command triggers the firmware to
+		// reply with a full "c" config line (see UpdateSensorZone /
+		// UpdateSensorColor in firmware -- both call PrintLedConfig()).
+		// Firing all of them back-to-back via forEach (no delay between
+		// writes) sent up to 14 commands within milliseconds for a
+		// 7-sensor pad. The Teensy's single-threaded serial loop can't
+		// keep up, and the WebSerial read loop's shared buffer (reset
+		// only on a real newline) would end up with multiple responses
+		// arriving faster than they could be cleanly split apart --
+		// producing garbled "c" lines with corrupted/inflated sensor
+		// counts. This is what caused removing one sensor from an 8-FSR
+		// setup to explode the LED Panels list up past 50 entries.
+		//
+		// Fix: serialize the writes with a small delay between each one
+		// so the firmware has time to fully process and respond before
+		// the next command is sent.
 		sendSensorCount(updated.length);
 		setTimeout(() => {
+			let delay = 0;
+			const stepMs = 60; // gives the Teensy's loop() time to read, respond, and flush before the next write
 			updated.forEach((s) => {
-				sendColor(s.sensorIndex, s.color);
-				sendZone(s.sensorIndex, s.ledOffset, s.ledCount);
+				setTimeout(() => sendColor(s.sensorIndex, s.color), delay);
+				delay += stepMs;
+				setTimeout(() => sendZone(s.sensorIndex, s.ledOffset, s.ledCount), delay);
+				delay += stepMs;
 			});
 		}, 150);
 	};
@@ -333,11 +373,19 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 		setSensors([...preset.sensors]);
 		saveSensors([...preset.sensors]);
 		setBrightness(preset.brightness);
+		// Serialized with delays for the same reason as removeSensor above --
+		// firing every sensor's "l"/"z" commands back-to-back floods the
+		// firmware faster than its single-threaded loop can respond,
+		// corrupting the "c" responses that come back.
+		let delay = 0;
+		const stepMs = 60;
 		preset.sensors.forEach((s) => {
-			sendColor(s.sensorIndex, s.color);
-			sendZone(s.sensorIndex, s.ledOffset, s.ledCount);
+			setTimeout(() => sendColor(s.sensorIndex, s.color), delay);
+			delay += stepMs;
+			setTimeout(() => sendZone(s.sensorIndex, s.ledOffset, s.ledCount), delay);
+			delay += stepMs;
 		});
-		sendBrightness(preset.brightness);
+		setTimeout(() => sendBrightness(preset.brightness), delay);
 	};
 
 	const saveCurrentAsPreset = () => {
@@ -598,6 +646,412 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 
 /*===========================================================================*/
 
+/*===========================================================================*/
+// SENSOR TUNING SECTION — gain, trigger threshold, release threshold.
+// Mirrors the firmware's "y", "r", "g", "p" serial commands added in
+// fsr_gain_dualthresh.ino. Helps fix missed double-taps at high speed by
+// giving a wide, independently adjustable ON/OFF gap per sensor, plus a
+// gain multiplier for weaker FSR variants (e.g. UX FSR 406).
+
+interface SensorTuning {
+	trigger: number;     // 0-1023, ON threshold
+	release: number;     // 0-1023, OFF threshold (must be < trigger)
+	gainX100: number;    // 10-500, where 100 = 1.0x
+	buttonGroup: number; // sensors sharing the same group register as ONE
+	                     // joystick button to ITGMania. Defaults to the
+	                     // sensor's own index (no sharing).
+}
+
+const LS_TUNING_KEY = "webfsr_sensor_tuning_v2";
+
+function loadTuning(count: number): SensorTuning[] {
+	try {
+		const raw = localStorage.getItem(LS_TUNING_KEY);
+		const saved = raw ? (JSON.parse(raw) as SensorTuning[]) : null;
+		if (saved && saved.length >= count) return saved.slice(0, count);
+	} catch {}
+	return Array.from({ length: count }, (_, i) => ({ trigger: 700, release: 300, gainX100: 100, buttonGroup: i }));
+}
+function saveTuning(t: SensorTuning[]) {
+	localStorage.setItem(LS_TUNING_KEY, JSON.stringify(t));
+}
+
+interface SensorTuningSectionProps {
+	connected: boolean;
+	sendText: (text: string) => void;
+	numSensors: number;
+	latestValues: number[];
+	sensorLabels: string[];
+	advancedEnabled: boolean;
+	onToggleAdvancedMode: () => void;
+	// Reports the current Trigger AND Release thresholds for every sensor
+	// up to Dashboard whenever either changes, so the main page sensor
+	// bars can show the values the firmware is ACTUALLY using once
+	// Advanced mode is on, instead of the stale legacy `thresholds` array
+	// which no longer reflects reality the moment Trigger/Release diverge
+	// from it.
+	onTuningValuesChange?: (triggers: number[], releases: number[]) => void;
+}
+
+const LS_ADVANCED_MODE_KEY = "webfsr_advanced_tuning_enabled";
+
+function loadAdvancedMode(): boolean {
+	try {
+		return localStorage.getItem(LS_ADVANCED_MODE_KEY) === "true";
+	} catch {
+		return false;
+	}
+}
+function saveAdvancedMode(enabled: boolean) {
+	localStorage.setItem(LS_ADVANCED_MODE_KEY, enabled ? "true" : "false");
+}
+
+function SensorTuningSection({
+	connected,
+	sendText,
+	numSensors,
+	latestValues,
+	sensorLabels,
+	advancedEnabled,
+	onToggleAdvancedMode,
+	onTuningValuesChange,
+}: SensorTuningSectionProps) {
+	const effectiveCount = numSensors > 0 ? numSensors : 4;
+	const [tuning, setTuning] = useState<SensorTuning[]>(() => loadTuning(effectiveCount));
+	const [tuningOpen, setTuningOpen] = useState<boolean>(false);
+	const [expandedSensor, setExpandedSensor] = useState<number | null>(null);
+
+	const toggleAdvancedMode = onToggleAdvancedMode;
+
+	// Report current Trigger AND Release values up to Dashboard every time
+	// they change, so the main page sensor bars can reflect what the
+	// firmware is actually using once Advanced mode is on.
+	useEffect(() => {
+		onTuningValuesChange?.(tuning.map((t) => t.trigger), tuning.map((t) => t.release));
+	}, [tuning, onTuningValuesChange]);
+
+	// Grow/shrink tuning array if sensor count changes
+	useEffect(() => {
+		if (effectiveCount !== tuning.length) {
+			const next = Array.from({ length: effectiveCount }, (_, i) =>
+				tuning[i] ?? { trigger: 700, release: 300, gainX100: 100, buttonGroup: i }
+			);
+			setTuning(next);
+			saveTuning(next);
+		}
+	}, [effectiveCount]);
+
+	// Parse "p <sensor> <trigger> <release> <gain> <buttonGroup> <liveValue>"
+	// responses from the firmware so the UI reflects what's actually saved
+	// on the pad.
+	const handleTuningLine = (line: string) => {
+		if (!line.startsWith("p ")) return false;
+		const nums = line.slice(2).trim().split(/\s+/).map(Number);
+		if (nums.length < 6) return false;
+		const [sensor, trigger, release, gain, buttonGroup] = nums;
+		setTuning((prev) => {
+			if (sensor < 0 || sensor >= prev.length) return prev;
+			const updated = [...prev];
+			updated[sensor] = { trigger, release, gainX100: gain, buttonGroup };
+			saveTuning(updated);
+			return updated;
+		});
+		return true;
+	};
+
+	(SensorTuningSection as unknown as { _handleLine: (l: string) => boolean })._handleLine = handleTuningLine;
+
+	// Query all sensors' tuning on connect
+	const hasQueriedRef = useRef(false);
+	useEffect(() => {
+		if (connected && !hasQueriedRef.current) {
+			hasQueriedRef.current = true;
+			setTimeout(() => {
+				for (let i = 0; i < effectiveCount; i++) {
+					sendText(`p ${i}\n`);
+				}
+			}, 500);
+		}
+		if (!connected) hasQueriedRef.current = false;
+	}, [connected, sendText, effectiveCount]);
+
+	const sendTrigger = (i: number, val: number) => { if (connected) sendText(`y ${i} ${val}\n`); };
+	const sendRelease = (i: number, val: number) => { if (connected) sendText(`r ${i} ${val}\n`); };
+	const sendGain    = (i: number, val: number) => { if (connected) sendText(`g ${i} ${val}\n`); };
+	const sendButtonGroup = (i: number, group: number) => { if (connected) sendText(`m ${i} ${group}\n`); };
+
+	const updateTuning = (i: number, patch: Partial<SensorTuning>) => {
+		const updated = tuning.map((t, idx) => idx === i ? { ...t, ...patch } : t);
+		setTuning(updated);
+		saveTuning(updated);
+	};
+
+	const commitTrigger = (i: number, val: number) => { updateTuning(i, { trigger: val }); sendTrigger(i, val); };
+	const commitRelease = (i: number, val: number) => { updateTuning(i, { release: val }); sendRelease(i, val); };
+	const commitGain    = (i: number, val: number) => { updateTuning(i, { gainX100: val }); sendGain(i, val); };
+	const commitButtonGroup = (i: number, group: number) => { updateTuning(i, { buttonGroup: group }); sendButtonGroup(i, group); };
+
+	// Quick presets for common situations
+	const applyFastRetriggerPreset = (i: number) => {
+		// Wide gap, biased toward easy re-arming for rapid double-taps.
+		const t = { trigger: 750, release: 250, gainX100: tuning[i]?.gainX100 ?? 100 };
+		updateTuning(i, t);
+		sendTrigger(i, t.trigger);
+		sendRelease(i, t.release);
+	};
+	const applyStablePreset = (i: number) => {
+		// Narrower gap, closer to original single-threshold feel.
+		const t = { trigger: 550, release: 450, gainX100: tuning[i]?.gainX100 ?? 100 };
+		updateTuning(i, t);
+		sendTrigger(i, t.trigger);
+		sendRelease(i, t.release);
+	};
+	const applyWeakFsrBoostPreset = (i: number) => {
+		// For UX FSR 406 or other low-output sensors -- boost gain first.
+		updateTuning(i, { gainX100: 180 });
+		sendGain(i, 180);
+	};
+
+	return (
+		<div className="p-3 border rounded bg-white dark:bg-neutral-900">
+			<button
+				className="flex items-center justify-between w-full text-left mb-0"
+				onClick={() => setTuningOpen((o) => !o)}
+			>
+				<span className="text-sm font-semibold">Sensor Tuning</span>
+				<span className="text-xs text-muted-foreground">{tuningOpen ? "▲" : "▼"}</span>
+			</button>
+
+			{tuningOpen && (
+				<div className="mt-3 flex flex-col gap-3">
+					{/* Advanced mode toggle — hides trigger/release/gain controls
+					    behind an explicit opt-in so casual users aren't shown
+					    settings they don't need, while still being one click
+					    away for players tuning for very fast play. */}
+					<div className="flex items-center justify-between p-2 border border-border rounded bg-muted/30">
+						<div className="flex flex-col gap-0.5">
+							<span className="text-xs font-medium">Advanced mode</span>
+							<span className="text-[10px] text-muted-foreground">
+								Per-sensor trigger/release thresholds and gain
+							</span>
+						</div>
+						<button
+							role="switch"
+							aria-checked={advancedEnabled}
+							onClick={toggleAdvancedMode}
+							className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ${
+								advancedEnabled ? "bg-foreground" : "bg-muted-foreground/30"
+							}`}
+						>
+							<span
+								className={`inline-block h-3.5 w-3.5 transform rounded-full bg-background transition-transform ${
+									advancedEnabled ? "translate-x-5" : "translate-x-1"
+								}`}
+							/>
+						</button>
+					</div>
+
+					{!advancedEnabled && (
+						<p className="text-[11px] text-muted-foreground italic">
+							Enable advanced mode to access per-sensor trigger/release thresholds and gain.
+							Useful for fixing missed double-taps on fast repeated hits.
+						</p>
+					)}
+
+					{advancedEnabled && (
+						<>
+							<p className="text-[11px] text-muted-foreground">
+								Fine-tune trigger/release thresholds and gain per sensor. A wider gap between
+								Trigger and Release helps catch fast repeated hits (e.g. Down-Up-Down streams)
+								that a single threshold can miss.
+							</p>
+
+							{Array.from({ length: effectiveCount }, (_, i) => {
+								const t = tuning[i] ?? { trigger: 700, release: 300, gainX100: 100 };
+								const live = latestValues[i] ?? 0;
+								const label = sensorLabels[i] || `Sensor ${i + 1}`;
+								const isExpanded = expandedSensor === i;
+								const gap = t.trigger - t.release;
+								const gapWarning = gap < 100;
+
+
+						return (
+							<div key={i} className="border border-border rounded p-2">
+								<button
+									className="flex items-center justify-between w-full text-left"
+									onClick={() => setExpandedSensor(isExpanded ? null : i)}
+								>
+									<span className="text-xs font-medium">{label} <span className="text-muted-foreground font-mono">#{i}</span></span>
+									<div className="flex items-center gap-2">
+										<span className="text-[10px] font-mono text-muted-foreground">live: {live}</span>
+										<span className="text-xs text-muted-foreground">{isExpanded ? "▲" : "▼"}</span>
+									</div>
+								</button>
+
+								{isExpanded && (
+									<div className="mt-2 flex flex-col gap-2">
+										{/* Live value bar with trigger/release markers */}
+										<div className="relative h-3 bg-muted rounded overflow-hidden">
+											<div
+												className="absolute inset-y-0 left-0 bg-blue-400/40"
+												style={{ width: `${(live / 1023) * 100}%` }}
+											/>
+											<div
+												className="absolute inset-y-0 w-0.5 bg-red-500"
+												style={{ left: `${(t.trigger / 1023) * 100}%` }}
+												title={`Trigger: ${t.trigger}`}
+											/>
+											<div
+												className="absolute inset-y-0 w-0.5 bg-green-500"
+												style={{ left: `${(t.release / 1023) * 100}%` }}
+												title={`Release: ${t.release}`}
+											/>
+										</div>
+										<div className="flex justify-between text-[9px] text-muted-foreground">
+											<span>0</span><span>1023</span>
+										</div>
+
+										{/* Trigger threshold */}
+										<div className="flex flex-col gap-1">
+											<div className="flex items-center justify-between">
+												<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
+													Trigger (ON)
+												</label>
+												<span className="text-xs font-mono text-red-500">{t.trigger}</span>
+											</div>
+											<input
+												type="range" min={0} max={1023} step={5} value={t.trigger}
+												className="w-full h-1.5 accent-red-500 cursor-pointer"
+												onChange={(e) => updateTuning(i, { trigger: Number(e.target.value) })}
+												onMouseUp={(e) => commitTrigger(i, Number((e.target as HTMLInputElement).value))}
+												onTouchEnd={(e) => commitTrigger(i, Number((e.target as HTMLInputElement).value))}
+											/>
+										</div>
+
+										{/* Release threshold */}
+										<div className="flex flex-col gap-1">
+											<div className="flex items-center justify-between">
+												<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
+													Release (OFF)
+												</label>
+												<span className="text-xs font-mono text-green-500">{t.release}</span>
+											</div>
+											<input
+												type="range" min={0} max={1023} step={5} value={t.release}
+												className="w-full h-1.5 accent-green-500 cursor-pointer"
+												onChange={(e) => updateTuning(i, { release: Number(e.target.value) })}
+												onMouseUp={(e) => commitRelease(i, Number((e.target as HTMLInputElement).value))}
+												onTouchEnd={(e) => commitRelease(i, Number((e.target as HTMLInputElement).value))}
+											/>
+										</div>
+
+										{gapWarning && (
+											<p className="text-[10px] text-amber-500">
+												⚠ Trigger and Release are close together ({gap} apart). A narrow gap
+												can still miss fast double-taps. Try widening to 300+ apart.
+											</p>
+										)}
+
+										{/* Gain */}
+										<div className="flex flex-col gap-1">
+											<div className="flex items-center justify-between">
+												<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
+													Gain
+												</label>
+												<span className="text-xs font-mono text-muted-foreground">{(t.gainX100 / 100).toFixed(2)}x</span>
+											</div>
+											<input
+												type="range" min={10} max={500} step={5} value={t.gainX100}
+												className="w-full h-1.5 accent-foreground cursor-pointer"
+												onChange={(e) => updateTuning(i, { gainX100: Number(e.target.value) })}
+												onMouseUp={(e) => commitGain(i, Number((e.target as HTMLInputElement).value))}
+												onTouchEnd={(e) => commitGain(i, Number((e.target as HTMLInputElement).value))}
+											/>
+											<p className="text-[10px] text-muted-foreground">
+												Boosts weak FSR signals (e.g. UX FSR 406) before threshold comparison. 1.00x = no change.
+											</p>
+										</div>
+
+										{/* Button Group -- shares a single joystick button across multiple
+										    sensors mapped to the same panel (e.g. two FSRs both on "Down")
+										    so ITGMania sees ONE input instead of two separate buttons. */}
+										<div className="flex flex-col gap-1">
+											<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
+												Button Group
+											</label>
+											{/*
+											  NOTE: native <option> elements ignore Tailwind's bg-transparent /
+											  dark: utility classes in most browsers -- they're rendered by the
+											  OS's own dropdown widget, not the page's CSS box model. Explicit
+											  inline styles on both <select> and <option> are needed so the
+											  dropdown list doesn't show a stark white background that clashes
+											  with the rest of the dark-themed panel.
+											*/}
+											<select
+												value={t.buttonGroup}
+												onChange={(e) => commitButtonGroup(i, Number(e.target.value))}
+												className="text-xs bg-white dark:bg-neutral-900 border border-border rounded px-2 py-1 w-full focus:outline-none focus:ring-1 focus:ring-ring"
+											>
+												<option value={i} className="bg-white dark:bg-neutral-900" style={{ backgroundColor: "inherit" }}>
+													No sharing (own button)
+												</option>
+												{Array.from({ length: effectiveCount }, (_, j) => j)
+													.filter((j) => j !== i)
+													.map((j) => (
+														<option key={j} value={j} className="bg-white dark:bg-neutral-900" style={{ backgroundColor: "inherit" }}>
+															Share with {sensorLabels[j] || `Sensor ${j + 1}`} (#{j})
+														</option>
+													))}
+											</select>
+											{t.buttonGroup !== i && (
+												<p className="text-[10px] text-amber-500">
+													⚠ This sensor sends the same button as #{t.buttonGroup}. Pressing
+													either one (or both) registers as a single input to ITGMania.
+												</p>
+											)}
+											<p className="text-[10px] text-muted-foreground">
+												Use this when 2 FSRs are wired to the same panel (e.g. two "Down"
+												sensors) so they act as one button instead of two.
+											</p>
+										</div>
+
+										{/* Quick presets */}
+										<div className="flex flex-wrap gap-1 mt-1">
+											<Button variant="outline" size="sm" className="text-xs flex-1"
+												onClick={() => applyFastRetriggerPreset(i)}>
+												Fast re-trigger
+											</Button>
+											<Button variant="outline" size="sm" className="text-xs flex-1"
+												onClick={() => applyStablePreset(i)}>
+												Stable / narrow
+											</Button>
+											<Button variant="outline" size="sm" className="text-xs flex-1"
+												onClick={() => applyWeakFsrBoostPreset(i)}>
+												Boost weak FSR
+											</Button>
+										</div>
+									</div>
+								)}
+							</div>
+						);
+					})}
+
+					<Button variant="outline" size="sm" className="w-full text-xs" disabled={!connected}
+						onClick={() => { for (let i = 0; i < effectiveCount; i++) sendText(`p ${i}\n`); }}>
+						Sync from pad
+					</Button>
+						</>
+					)}
+
+					{!connected && (
+						<p className="text-[11px] text-muted-foreground text-center">Connect to pad to tune sensors</p>
+					)}
+				</div>
+			)}
+		</div>
+	);
+}
+
 const Dashboard = () => {
 	const colorSettings = useColorSettings();
 	const barSettings = useBarVisualizationSettings();
@@ -629,6 +1083,17 @@ const Dashboard = () => {
 					sendRemote({ type: "values", payload: { values, timestamp: Date.now() } });
 				}
 			}
+		},
+		// Forward every non-"v" serial line (c ..., p ..., q_ok, z_ok, n_ok, etc.)
+		// to whichever section registered a handler for it via the _handleLine
+		// static property trick. This is what actually makes "Sync from pad"
+		// work for LED config and sensor tuning -- without this the hook used
+		// to silently discard every non-"v" line.
+		(line: string) => {
+			const ledHandler = (LedSection as unknown as { _handleLine?: (l: string) => boolean })._handleLine;
+			if (ledHandler?.(line)) return;
+			const tuningHandler = (SensorTuningSection as unknown as { _handleLine?: (l: string) => boolean })._handleLine;
+			if (tuningHandler?.(line)) return;
 		},
 	);
 
@@ -683,6 +1148,34 @@ const Dashboard = () => {
 
 	const [thresholds, setThresholds] = useState<number[]>([]);
 	const [sensorLabels, setSensorLabels] = useState<string[]>([]);
+
+	// Advanced Sensor Tuning mode -- lifted up to Dashboard level (rather
+	// than kept local to SensorTuningSection) because it needs to affect
+	// the MAIN PAGE sensor bars too: the main page's threshold drag/slider
+	// sends the legacy single-value "0 <sensor> <val>" command, which
+	// firmware-side collapses Trigger AND Release back down to a narrow
+	// ~20-unit gap. If Advanced mode is on and someone's deliberately set
+	// a wide Trigger/Release gap, the main page slider must stop sending
+	// that legacy command -- otherwise it silently undoes the Advanced
+	// tuning the moment the main page is touched.
+	const [advancedTuningEnabled, setAdvancedTuningEnabled] = useState<boolean>(loadAdvancedMode);
+	const toggleAdvancedTuningMode = useStableCallback(() => {
+		const next = !advancedTuningEnabled;
+		setAdvancedTuningEnabled(next);
+		saveAdvancedMode(next);
+	});
+
+	// Holds the live Trigger and Release thresholds per sensor as reported
+	// by SensorTuningSection, used to show the main page sensor bars'
+	// threshold lines correctly once Advanced mode is on (see
+	// handleThresholdChange and sensorBars below).
+	const [liveTriggerValues, setLiveTriggerValues] = useState<number[]>([]);
+	const [liveReleaseValues, setLiveReleaseValues] = useState<number[]>([]);
+	const onTuningValuesChangeStable = useStableCallback((triggers: number[], releases: number[]) => {
+		setLiveTriggerValues(triggers);
+		setLiveReleaseValues(releases);
+	});
+
 	const [isSyncingProfile, setIsSyncingProfile] = useState<boolean>(false);
 	const writebackTimeoutRef = useRef<number | null>(null);
 
@@ -958,7 +1451,15 @@ const Dashboard = () => {
 
 		if (activeProfileId) updateThresholds(newThresholds);
 
-		if (connected) {
+		// IMPORTANT: while Advanced Sensor Tuning is on, do NOT send the
+		// legacy "<index> <value>" command. Firmware-side, that command
+		// sets BOTH trigger and release threshold from a single number
+		// (release = trigger - 20), which would silently collapse any
+		// wider gap configured in Advanced mode every time this slider
+		// is touched. The main page bar still updates visually/locally
+		// and still syncs to the active profile, it just stops being the
+		// thing that talks to the firmware once Advanced mode owns that.
+		if (connected && !advancedTuningEnabled) {
 			const message = `${index} ${value}\n`;
 			sendText(message);
 		}
@@ -1017,7 +1518,7 @@ const Dashboard = () => {
 			key={`sensor-${index}`}
 			value={latestData?.values[index] || 0}
 			index={index}
-			threshold={thresholds[index] || 512}
+			threshold={advancedTuningEnabled ? (liveTriggerValues[index] ?? thresholds[index] ?? 512) : (thresholds[index] || 512)}
 			onThresholdChange={handleThresholdChange}
 			label={sensorLabels[index] || `Sensor ${index + 1}`}
 			color={
@@ -1030,8 +1531,11 @@ const Dashboard = () => {
 			thresholdColor={colorSettings.thresholdColor}
 			useThresholdColor={barSettings.useThresholdColor}
 			useGradient={barSettings.useBarGradient}
-			isLocked={generalSettings.lockThresholds}
+			isLocked={generalSettings.lockThresholds || advancedTuningEnabled}
 			theme={resolvedTheme}
+			secondaryThreshold={advancedTuningEnabled ? liveReleaseValues[index] : undefined}
+			secondaryThresholdLabel="Release"
+			secondaryThresholdColor="rgba(34, 197, 94, 0.9)"
 		/>
 	));
 
@@ -1153,6 +1657,18 @@ const Dashboard = () => {
 								thresholds={thresholds}
 							/>
 
+							{/* ── SENSOR TUNING SECTION ── */}
+							<SensorTuningSection
+								connected={connected}
+								sendText={sendTextStable}
+								numSensors={numSensors}
+								latestValues={latestData?.values ?? []}
+								sensorLabels={sensorLabels}
+								advancedEnabled={advancedTuningEnabled}
+								onToggleAdvancedMode={toggleAdvancedTuningMode}
+								onTuningValuesChange={onTuningValuesChangeStable}
+							/>
+
 							<ProfilesSection
 								profiles={profiles}
 								activeProfile={activeProfile}
@@ -1242,6 +1758,12 @@ const Dashboard = () => {
 						<>
 							<div className="flex gap-2 shrink-0 h-100">
 								<div className="px-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm grow">
+									{advancedTuningEnabled && (
+										<p className="text-[11px] text-amber-500 px-1 pt-2">
+											Advanced Sensor Tuning is on — threshold dragging here is disabled.
+											Adjust Trigger/Release in the Sensor Tuning panel instead.
+										</p>
+									)}
 									<div className="grid grid-flow-col auto-cols-fr gap-4 h-full w-full py-2">{sensorBars}</div>
 								</div>
 
