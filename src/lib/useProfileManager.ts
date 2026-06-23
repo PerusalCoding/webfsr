@@ -42,6 +42,16 @@ export interface ProfileData {
 	obsPassword?: string;
 	obsSendRate?: number;
 	obsAutoConnect?: boolean;
+	// Maps DISPLAY POSITION -> actual sensor index. e.g. [3, 1, 0, 2] means
+	// "show sensor 3 first, then sensor 1, then sensor 0, then sensor 2"
+	// in the main sensor bars, LED Panels list, and Sensor Tuning list.
+	// Purely a display/ordering concern -- never changes which physical
+	// FSR maps to which firmware sensor index, LED zone, button group,
+	// etc. Lets someone whose physical wiring doesn't match webfsr's
+	// default Left/Down/Up/Right order fix that visually without
+	// resoldering or reflashing. Defaults to [] (meaning "use natural
+	// 0,1,2,... order") if never set.
+	displayOrder?: number[];
 }
 
 export const DEFAULT_PROFILE: Omit<ProfileData, "id" | "createdAt" | "updatedAt"> = {
@@ -82,6 +92,7 @@ export const DEFAULT_PROFILE: Omit<ProfileData, "id" | "createdAt" | "updatedAt"
 	obsPassword: "",
 	obsSendRate: 60,
 	obsAutoConnect: true,
+	displayOrder: [],
 };
 
 export function useProfileManager() {
@@ -382,6 +393,19 @@ export function useProfileManager() {
 		}
 	};
 
+	// Update display order for active profile -- maps display position to
+	// actual sensor index, used to visually reorder sensor bars/LED rows/
+	// tuning rows to match physical pad wiring without touching firmware.
+	const updateDisplayOrder = async (newOrder: number[]) => {
+		if (!activeProfileId || !db) return;
+
+		try {
+			await updateProfile(activeProfileId, { displayOrder: newOrder });
+		} catch (err) {
+			console.error("Failed to update display order:", err);
+		}
+	};
+
 	// Reset profile to default values except name, id, timestamps
 	const resetProfileToDefaults = async (id: number) => {
 		if (!db) return null;
@@ -399,6 +423,7 @@ export function useProfileManager() {
 				...DEFAULT_PROFILE,
 				thresholds: existingProfile.thresholds,
 				sensorLabels: existingProfile.sensorLabels,
+				displayOrder: (existingProfile as ProfileData).displayOrder ?? [],
 				obsPassword: (existingProfile as ProfileData).obsPassword ?? "",
 				obsSendRate: (existingProfile as ProfileData).obsSendRate ?? 30,
 				obsAutoConnect: (existingProfile as ProfileData).obsAutoConnect ?? false,
@@ -436,6 +461,7 @@ export function useProfileManager() {
 		setActiveProfileById,
 		updateThresholds,
 		updateSensorLabels,
+		updateDisplayOrder,
 		resetProfileToDefaults,
 	};
 }

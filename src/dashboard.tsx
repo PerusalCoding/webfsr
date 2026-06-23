@@ -1,4 +1,4 @@
-import { AlertTriangle, Download, Heart, Moon, Share, Smartphone, Sun, Unplug } from "lucide-react";
+import { AlertTriangle, Download, GripVertical, Heart, Moon, Share, Smartphone, Sun, Unplug } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
 	AboutDialog,
@@ -57,6 +57,74 @@ function useStableCallback<Args extends unknown[], R>(callback: (...args: Args) 
 	});
 
 	return stableCallbackRef.current as (...args: Args) => R;
+}
+
+// A small, explicit drag handle icon -- dragging only starts when the
+// user grabs THIS element, not anywhere on the row. Keeps clicks on
+// labels, color swatches, and number inputs elsewhere in the same row
+// from accidentally triggering a drag.
+function DragHandle({
+	onDragStart,
+	onDragEnd,
+	className = "",
+}: {
+	onDragStart: (e: React.DragEvent) => void;
+	onDragEnd: () => void;
+	className?: string;
+}) {
+	return (
+		<div
+			draggable
+			onDragStart={onDragStart}
+			onDragEnd={onDragEnd}
+			className={`cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground transition-colors shrink-0 touch-none ${className}`}
+			title="Drag to reorder"
+		>
+			<GripVertical className="size-4" />
+		</div>
+	);
+}
+
+// Shared drag-and-drop reordering logic used identically by the main
+// sensor bars, LED Panels list, and Sensor Tuning list -- all three need
+// to agree on the SAME display order (it's one shared concept: "which
+// physical position does this sensor visually appear in"), so the actual
+// state lives once in Dashboard (displayOrder/moveDisplayPosition) and
+// each list just needs this small bit of local drag-tracking UI state
+// plus a way to call back into that shared move function.
+function useRowDragReorder(onMove: (fromPos: number, toPos: number) => void) {
+	const [draggingPos, setDraggingPos] = useState<number | null>(null);
+	const [dragOverPos, setDragOverPos] = useState<number | null>(null);
+
+	const handleDragStart = (pos: number) => (e: React.DragEvent) => {
+		setDraggingPos(pos);
+		// Required for Firefox to actually initiate the drag.
+		e.dataTransfer.effectAllowed = "move";
+		e.dataTransfer.setData("text/plain", String(pos));
+	};
+
+	const handleDragEnd = () => {
+		setDraggingPos(null);
+		setDragOverPos(null);
+	};
+
+	const handleDragOver = (pos: number) => (e: React.DragEvent) => {
+		e.preventDefault();
+		if (draggingPos !== null && pos !== draggingPos) {
+			setDragOverPos(pos);
+		}
+	};
+
+	const handleDrop = (pos: number) => (e: React.DragEvent) => {
+		e.preventDefault();
+		if (draggingPos !== null && draggingPos !== pos) {
+			onMove(draggingPos, pos);
+		}
+		setDraggingPos(null);
+		setDragOverPos(null);
+	};
+
+	return { draggingPos, dragOverPos, handleDragStart, handleDragEnd, handleDragOver, handleDrop };
 }
 
 const MOCK_SENSOR_COUNT = 6;
@@ -196,9 +264,11 @@ interface LedSectionProps {
 	connected: boolean;
 	sendText: (text: string) => void;
 	thresholds: number[];
+	displayOrder: number[];
+	moveDisplayPosition: (fromPos: number, toPos: number) => void;
 }
 
-function LedSection({ connected, sendText }: LedSectionProps) {
+function LedSection({ connected, sendText, displayOrder, moveDisplayPosition }: LedSectionProps) {
 	const [sensors, setSensors]       = useState<SensorZone[]>(loadSensors);
 	const [brightness, setBrightness] = useState<number>(60);
 	const [ledOpen, setLedOpen]       = useState<boolean>(true);
@@ -206,6 +276,7 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 	const [customPresets, setCustomPresets] = useState<LedPreset[]>(loadCustomPresets);
 	const [newPresetName, setNewPresetName] = useState<string>("");
 	const [showSaveInput, setShowSaveInput] = useState<boolean>(false);
+	const ledDrag = useRowDragReorder(moveDisplayPosition);
 
 	// Query firmware on connect. We deliberately do NOT push our locally
 	// cached `sensors` back to the firmware here -- doing so used to race
@@ -422,59 +493,79 @@ function LedSection({ connected, sendText }: LedSectionProps) {
 			{ledOpen && (
 				<div className="mt-3 flex flex-col gap-3">
 
-					{/* Per-sensor rows */}
+					{/* Per-sensor rows -- rendered in DISPLAY order (drag to
+					    reorder), but each row's underlying sensorIndex
+					    field still refers to the actual firmware sensor.
+					    Dragging only changes visual order here, never
+					    which physical FSR a row controls. */}
 					<div className="flex flex-col gap-2">
-						{sensors.map((s, i) => (
-							<div key={i} className="flex items-center gap-2">
-								{/* Color swatch */}
+						{Array.from({ length: sensors.length }, (_, position) => {
+							const i = displayOrder.length === sensors.length
+								? (displayOrder[position] ?? position)
+								: position;
+							const s = sensors[i];
+							if (!s) return null;
+							return (
 								<div
-									className="w-7 h-7 rounded-md border border-border shrink-0 cursor-pointer relative overflow-hidden"
-									style={{ background: s.color }}
+									key={i}
+									className={`flex items-center gap-2 transition-opacity ${ledDrag.draggingPos === position ? "opacity-40" : ""} ${ledDrag.dragOverPos === position ? "ring-2 ring-primary rounded" : ""}`}
+									onDragOver={ledDrag.handleDragOver(position)}
+									onDrop={ledDrag.handleDrop(position)}
 								>
-									<input
-										type="color"
-										value={s.color}
-										className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
-										onChange={(e) => updateSensor(i, { color: e.target.value })}
+									<DragHandle
+										onDragStart={ledDrag.handleDragStart(position)}
+										onDragEnd={ledDrag.handleDragEnd}
 									/>
-								</div>
-								{/* Label input */}
-								<input
-									type="text"
-									value={s.label}
-									maxLength={12}
-									className="flex-1 text-xs bg-transparent border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring min-w-0"
-									onChange={(e) => updateSensor(i, { label: e.target.value })}
-									placeholder={`S${i}`}
-								/>
-								{/* Editable firmware sensor index */}
-								<div className="flex items-center gap-0.5 shrink-0">
-									<span className="text-[10px] text-muted-foreground font-mono">#</span>
+									{/* Color swatch */}
+									<div
+										className="w-7 h-7 rounded-md border border-border shrink-0 cursor-pointer relative overflow-hidden"
+										style={{ background: s.color }}
+									>
+										<input
+											type="color"
+											value={s.color}
+											className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+											onChange={(e) => updateSensor(i, { color: e.target.value })}
+										/>
+									</div>
+									{/* Label input */}
 									<input
-										type="number"
-										min={0}
-										max={15}
-										value={s.sensorIndex}
-										title="Firmware sensor index — must match position in kSensors[] in your .ino file"
-										className="w-8 text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring text-center"
-										onChange={(e) => {
-											const v = parseInt(e.target.value);
-											if (!isNaN(v) && v >= 0 && v <= 15) {
-												updateSensor(i, { sensorIndex: v });
-											}
-										}}
+										type="text"
+										value={s.label}
+										maxLength={12}
+										className="flex-1 text-xs bg-transparent border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring min-w-0"
+										onChange={(e) => updateSensor(i, { label: e.target.value })}
+										placeholder={`S${i}`}
 									/>
+									{/* Editable firmware sensor index */}
+									<div className="flex items-center gap-0.5 shrink-0">
+										<span className="text-[10px] text-muted-foreground font-mono">#</span>
+										<input
+											type="number"
+											min={0}
+											max={15}
+											value={s.sensorIndex}
+											title="Firmware sensor index — must match position in kSensors[] in your .ino file"
+											className="w-8 text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring text-center"
+											onChange={(e) => {
+												const v = parseInt(e.target.value);
+												if (!isNaN(v) && v >= 0 && v <= 15) {
+													updateSensor(i, { sensorIndex: v });
+												}
+											}}
+										/>
+									</div>
+									{/* Remove button */}
+									{sensors.length > 1 && (
+										<button
+											onClick={() => removeSensor(i)}
+											className="text-xs text-muted-foreground hover:text-destructive transition-colors shrink-0"
+											title="Remove sensor"
+										>×</button>
+									)}
 								</div>
-								{/* Remove button */}
-								{sensors.length > 1 && (
-									<button
-										onClick={() => removeSensor(i)}
-										className="text-xs text-muted-foreground hover:text-destructive transition-colors shrink-0"
-										title="Remove sensor"
-									>×</button>
-								)}
-							</div>
-						))}
+							);
+						})}
 						{/* Add sensor button */}
 						<button
 							onClick={addSensor}
@@ -691,6 +782,8 @@ interface SensorTuningSectionProps {
 	// which no longer reflects reality the moment Trigger/Release diverge
 	// from it.
 	onTuningValuesChange?: (triggers: number[], releases: number[]) => void;
+	displayOrder: number[];
+	moveDisplayPosition: (fromPos: number, toPos: number) => void;
 }
 
 const LS_ADVANCED_MODE_KEY = "webfsr_advanced_tuning_enabled";
@@ -715,10 +808,13 @@ function SensorTuningSection({
 	advancedEnabled,
 	onToggleAdvancedMode,
 	onTuningValuesChange,
+	displayOrder,
+	moveDisplayPosition,
 }: SensorTuningSectionProps) {
 	const effectiveCount = numSensors > 0 ? numSensors : 4;
 	const [tuning, setTuning] = useState<SensorTuning[]>(() => loadTuning(effectiveCount));
 	const [tuningOpen, setTuningOpen] = useState<boolean>(false);
+	const tuningDrag = useRowDragReorder(moveDisplayPosition);
 	const [expandedSensor, setExpandedSensor] = useState<number | null>(null);
 
 	const toggleAdvancedMode = onToggleAdvancedMode;
@@ -866,7 +962,8 @@ function SensorTuningSection({
 								that a single threshold can miss.
 							</p>
 
-							{Array.from({ length: effectiveCount }, (_, i) => {
+							{Array.from({ length: effectiveCount }, (_, position) => {
+								const i = displayOrder.length === effectiveCount ? (displayOrder[position] ?? position) : position;
 								const t = tuning[i] ?? { trigger: 700, release: 300, gainX100: 100 };
 								const live = latestValues[i] ?? 0;
 								const label = sensorLabels[i] || `Sensor ${i + 1}`;
@@ -876,17 +973,28 @@ function SensorTuningSection({
 
 
 						return (
-							<div key={i} className="border border-border rounded p-2">
-								<button
-									className="flex items-center justify-between w-full text-left"
-									onClick={() => setExpandedSensor(isExpanded ? null : i)}
-								>
-									<span className="text-xs font-medium">{label} <span className="text-muted-foreground font-mono">#{i}</span></span>
-									<div className="flex items-center gap-2">
-										<span className="text-[10px] font-mono text-muted-foreground">live: {live}</span>
-										<span className="text-xs text-muted-foreground">{isExpanded ? "▲" : "▼"}</span>
-									</div>
-								</button>
+							<div
+								key={i}
+								className={`border border-border rounded p-2 transition-opacity ${tuningDrag.draggingPos === position ? "opacity-40" : ""} ${tuningDrag.dragOverPos === position ? "ring-2 ring-primary" : ""}`}
+								onDragOver={tuningDrag.handleDragOver(position)}
+								onDrop={tuningDrag.handleDrop(position)}
+							>
+								<div className="flex items-center gap-1.5">
+									<DragHandle
+										onDragStart={tuningDrag.handleDragStart(position)}
+										onDragEnd={tuningDrag.handleDragEnd}
+									/>
+									<button
+										className="flex items-center justify-between w-full text-left"
+										onClick={() => setExpandedSensor(isExpanded ? null : i)}
+									>
+										<span className="text-xs font-medium">{label} <span className="text-muted-foreground font-mono">#{i}</span></span>
+										<div className="flex items-center gap-2">
+											<span className="text-[10px] font-mono text-muted-foreground">live: {live}</span>
+											<span className="text-xs text-muted-foreground">{isExpanded ? "▲" : "▼"}</span>
+										</div>
+									</button>
+								</div>
 
 								{isExpanded && (
 									<div className="mt-2 flex flex-col gap-2">
@@ -917,7 +1025,15 @@ function SensorTuningSection({
 												<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
 													Trigger (ON)
 												</label>
-												<span className="text-xs font-mono text-red-500">{t.trigger}</span>
+												<input
+													type="number" min={0} max={1023} value={t.trigger}
+													className="w-14 text-xs font-mono text-red-500 bg-transparent border border-border rounded px-1 py-0.5 text-right focus:outline-none focus:ring-1 focus:ring-ring"
+													onChange={(e) => {
+														const v = Math.max(0, Math.min(1023, Number(e.target.value) || 0));
+														updateTuning(i, { trigger: v });
+													}}
+													onBlur={(e) => commitTrigger(i, Math.max(0, Math.min(1023, Number(e.target.value) || 0)))}
+												/>
 											</div>
 											<input
 												type="range" min={0} max={1023} step={5} value={t.trigger}
@@ -934,7 +1050,15 @@ function SensorTuningSection({
 												<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
 													Release (OFF)
 												</label>
-												<span className="text-xs font-mono text-green-500">{t.release}</span>
+												<input
+													type="number" min={0} max={1023} value={t.release}
+													className="w-14 text-xs font-mono text-green-500 bg-transparent border border-border rounded px-1 py-0.5 text-right focus:outline-none focus:ring-1 focus:ring-ring"
+													onChange={(e) => {
+														const v = Math.max(0, Math.min(1023, Number(e.target.value) || 0));
+														updateTuning(i, { release: v });
+													}}
+													onBlur={(e) => commitRelease(i, Math.max(0, Math.min(1023, Number(e.target.value) || 0)))}
+												/>
 											</div>
 											<input
 												type="range" min={0} max={1023} step={5} value={t.release}
@@ -958,7 +1082,18 @@ function SensorTuningSection({
 												<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
 													Gain
 												</label>
-												<span className="text-xs font-mono text-muted-foreground">{(t.gainX100 / 100).toFixed(2)}x</span>
+												<div className="flex items-center gap-1">
+													<input
+														type="number" min={10} max={500} value={t.gainX100}
+														className="w-12 text-xs font-mono text-muted-foreground bg-transparent border border-border rounded px-1 py-0.5 text-right focus:outline-none focus:ring-1 focus:ring-ring"
+														onChange={(e) => {
+															const v = Math.max(10, Math.min(500, Number(e.target.value) || 100));
+															updateTuning(i, { gainX100: v });
+														}}
+														onBlur={(e) => commitGain(i, Math.max(10, Math.min(500, Number(e.target.value) || 100)))}
+													/>
+													<span className="text-[10px] text-muted-foreground">({(t.gainX100 / 100).toFixed(2)}x)</span>
+												</div>
 											</div>
 											<input
 												type="range" min={10} max={500} step={5} value={t.gainX100}
@@ -1060,6 +1195,11 @@ const Dashboard = () => {
 	const generalSettings = useGeneralSettings();
 	const { updateAllSettings, getAllSettings } = useSettingsBulkActions();
 
+	// Rate limit for the ITGMania overlay bridge -- separate from OBS/remote
+	// since the overlay wants to feel instant (high rate) but we still don't
+	// want to flood the IPC channel on every single serial read.
+	const lastItgManiaBroadcastAtRef = useRef<number>(0);
+
 	const { isSupported, connect, disconnect, connected, connectionError, requestsPerSecond, sendText, latestData } = useSerialPort(
 		generalSettings.pollingRate,
 		generalSettings.useUnthrottledPolling,
@@ -1081,6 +1221,36 @@ const Dashboard = () => {
 				if (now - lastRemoteBroadcastAtRef.current >= remoteMinIntervalMs) {
 					lastRemoteBroadcastAtRef.current = now;
 					sendRemote({ type: "values", payload: { values, timestamp: Date.now() } });
+				}
+			}
+
+			// Push live sensor values + trigger state to the ITGMania Lua
+			// overlay via the Electron preload bridge, if it's available
+			// (i.e. running inside the Electron app, not the plain browser
+			// version of webfsr). 60Hz cap keeps this smooth without
+			// flooding IPC -- the overlay doesn't need more than that to
+			// look instant on screen.
+			const bridge = (window as unknown as { itgManiaBridge?: { broadcast: (p: unknown) => void } }).itgManiaBridge;
+			if (bridge) {
+				const itgManiaMinIntervalMs = 1000 / 30;
+				if (now - lastItgManiaBroadcastAtRef.current >= itgManiaMinIntervalMs) {
+					lastItgManiaBroadcastAtRef.current = now;
+					// Use the SAME trigger logic the firmware/main page would --
+					// when Advanced mode is on, compare against the live Trigger
+					// value for visual accuracy in the overlay; otherwise use
+					// the legacy single threshold.
+					const triggered = values.map((v, i) => {
+						const effectiveThreshold = advancedTuningEnabled
+							? (liveTriggerValues[i] ?? thresholds[i] ?? 512)
+							: (thresholds[i] ?? 512);
+						return v >= effectiveThreshold;
+					});
+					bridge.broadcast({
+						values,
+						triggered,
+						labels: sensorLabels,
+						timestamp: Date.now(),
+					});
 				}
 			}
 		},
@@ -1126,6 +1296,7 @@ const Dashboard = () => {
 		resetProfileToDefaults,
 		updateThresholds,
 		updateSensorLabels,
+		updateDisplayOrder,
 	} = useProfileManager();
 
 	const { resolvedTheme, setTheme } = useTheme();
@@ -1148,6 +1319,44 @@ const Dashboard = () => {
 
 	const [thresholds, setThresholds] = useState<number[]>([]);
 	const [sensorLabels, setSensorLabels] = useState<string[]>([]);
+
+	// Maps DISPLAY POSITION -> actual sensor index. e.g. displayOrder[0]
+	// tells you which real sensor index to show FIRST. Lets someone whose
+	// physical FSR wiring doesn't match Left/Down/Up/Right visually
+	// reorder the sensor bars, LED Panels list, and Sensor Tuning list to
+	// match their pad -- without resoldering anything or changing which
+	// firmware sensor index a given panel actually uses underneath.
+	// Persisted to the active Profile via updateDisplayOrder.
+	const [displayOrder, setDisplayOrder] = useState<number[]>([]);
+
+	// Returns a valid display order for the given sensor count -- either
+	// the saved order if it still matches (same length, same set of
+	// indices), or a fresh natural-order fallback [0,1,2,...] if the
+	// saved order is stale (e.g. sensor count changed since it was saved).
+	const getEffectiveDisplayOrder = (count: number, saved: number[]): number[] => {
+		if (saved.length === count) {
+			const seen = new Set(saved);
+			const isValidPermutation = seen.size === count && saved.every((v) => v >= 0 && v < count);
+			if (isValidPermutation) return saved;
+		}
+		return Array.from({ length: count }, (_, i) => i);
+	};
+
+	const effectiveDisplayOrder = getEffectiveDisplayOrder(numSensors, displayOrder);
+
+	// Moves the sensor currently shown at `fromPos` to `toPos` in the
+	// display order, persists it to the active profile, and updates local
+	// state immediately so the UI feels instant rather than waiting on
+	// the IndexedDB round trip.
+	const moveDisplayPosition = useStableCallback((fromPos: number, toPos: number) => {
+		if (fromPos === toPos) return;
+		const current = getEffectiveDisplayOrder(numSensors, displayOrder);
+		const next = [...current];
+		const [moved] = next.splice(fromPos, 1);
+		next.splice(toPos, 0, moved);
+		setDisplayOrder(next);
+		if (activeProfileId) updateDisplayOrder(next);
+	});
 
 	// Advanced Sensor Tuning mode -- lifted up to Dashboard level (rather
 	// than kept local to SensorTuningSection) because it needs to affect
@@ -1388,6 +1597,13 @@ const Dashboard = () => {
 			setSensorLabels(defaultLabels);
 			if (activeProfileId) void updateSensorLabels(defaultLabels);
 		}
+
+		// displayOrder has no "generate a default" branch like thresholds/
+		// labels above -- an empty array is itself a perfectly valid
+		// state (it means "natural order", handled by
+		// getEffectiveDisplayOrder's fallback), so there's nothing to
+		// backfill into the profile here.
+		setDisplayOrder(profile.displayOrder ?? []);
 	};
 
 	useEffect(() => {
@@ -1513,31 +1729,49 @@ const Dashboard = () => {
 		setAutoConnectEnabled(checked && !!pwd, pwd);
 	});
 
-	const sensorBars = Array.from({ length: numSensors }, (_, index) => (
-		<SensorBar
-			key={`sensor-${index}`}
-			value={latestData?.values[index] || 0}
-			index={index}
-			threshold={advancedTuningEnabled ? (liveTriggerValues[index] ?? thresholds[index] ?? 512) : (thresholds[index] || 512)}
-			onThresholdChange={handleThresholdChange}
-			label={sensorLabels[index] || `Sensor ${index + 1}`}
-			color={
-				barSettings.useSingleColor
-					? colorSettings.singleBarColor
-					: colorSettings.sensorColors[index % colorSettings.sensorColors.length] || "#ff0000"
-			}
-			showThresholdText={barSettings.showBarThresholdText}
-			showValueText={barSettings.showBarValueText}
-			thresholdColor={colorSettings.thresholdColor}
-			useThresholdColor={barSettings.useThresholdColor}
-			useGradient={barSettings.useBarGradient}
-			isLocked={generalSettings.lockThresholds || advancedTuningEnabled}
-			theme={resolvedTheme}
-			secondaryThreshold={advancedTuningEnabled ? liveReleaseValues[index] : undefined}
-			secondaryThresholdLabel="Release"
-			secondaryThresholdColor="rgba(34, 197, 94, 0.9)"
-		/>
-	));
+	const sensorBarsDrag = useRowDragReorder(moveDisplayPosition);
+
+	const sensorBars = Array.from({ length: numSensors }, (_, position) => {
+		const index = effectiveDisplayOrder[position] ?? position;
+		return (
+			<div
+				key={`sensor-pos-${position}`}
+				className={`relative h-full transition-opacity ${sensorBarsDrag.draggingPos === position ? "opacity-40" : ""} ${sensorBarsDrag.dragOverPos === position ? "ring-2 ring-primary rounded" : ""}`}
+				onDragOver={sensorBarsDrag.handleDragOver(position)}
+				onDrop={sensorBarsDrag.handleDrop(position)}
+			>
+				<div className="absolute top-0 left-1/2 -translate-x-1/2 z-10 pt-0.5">
+					<DragHandle
+						onDragStart={sensorBarsDrag.handleDragStart(position)}
+						onDragEnd={sensorBarsDrag.handleDragEnd}
+					/>
+				</div>
+				<SensorBar
+					key={`sensor-${index}`}
+					value={latestData?.values[index] || 0}
+					index={index}
+					threshold={advancedTuningEnabled ? (liveTriggerValues[index] ?? thresholds[index] ?? 512) : (thresholds[index] || 512)}
+					onThresholdChange={handleThresholdChange}
+					label={sensorLabels[index] || `Sensor ${index + 1}`}
+					color={
+						barSettings.useSingleColor
+							? colorSettings.singleBarColor
+							: colorSettings.sensorColors[index % colorSettings.sensorColors.length] || "#ff0000"
+					}
+					showThresholdText={barSettings.showBarThresholdText}
+					showValueText={barSettings.showBarValueText}
+					thresholdColor={colorSettings.thresholdColor}
+					useThresholdColor={barSettings.useThresholdColor}
+					useGradient={barSettings.useBarGradient}
+					isLocked={generalSettings.lockThresholds || advancedTuningEnabled}
+					theme={resolvedTheme}
+					secondaryThreshold={advancedTuningEnabled ? liveReleaseValues[index] : undefined}
+					secondaryThresholdLabel="Release"
+					secondaryThresholdColor="rgba(34, 197, 94, 0.9)"
+				/>
+			</div>
+		);
+	});
 
 	if (isMobile) {
 		return (
@@ -1655,6 +1889,8 @@ const Dashboard = () => {
 								connected={connected}
 								sendText={sendTextStable}
 								thresholds={thresholds}
+								displayOrder={effectiveDisplayOrder}
+								moveDisplayPosition={moveDisplayPosition}
 							/>
 
 							{/* ── SENSOR TUNING SECTION ── */}
@@ -1667,6 +1903,8 @@ const Dashboard = () => {
 								advancedEnabled={advancedTuningEnabled}
 								onToggleAdvancedMode={toggleAdvancedTuningMode}
 								onTuningValuesChange={onTuningValuesChangeStable}
+								displayOrder={effectiveDisplayOrder}
+								moveDisplayPosition={moveDisplayPosition}
 							/>
 
 							<ProfilesSection
