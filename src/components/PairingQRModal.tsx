@@ -156,7 +156,24 @@ const PairingQRModal = ({
 
 		const generateQR = async () => {
 			try {
-				const mobileUrl = `${window.location.origin}?code=${encodeURIComponent(code)}`;
+				// IMPORTANT: window.location.origin only gives the domain
+				// root (e.g. "https://perusalcoding.github.io"), NOT the
+				// "/webfsr/" subpath this site is actually deployed at on
+				// GitHub Pages. Using origin alone produced a QR code that
+				// sent phones to the bare domain root, which 404s since
+				// nothing is hosted there -- the real app lives one level
+				// deeper. Building from location.href's directory (the
+				// part up to and including the last "/") correctly
+				// preserves whatever subpath the page is actually being
+				// served from, working the same whether this is deployed
+				// at a domain root, "/webfsr/", or any other subpath,
+				// without hardcoding "webfsr" anywhere.
+				const currentUrl = new URL(window.location.href);
+				const pathDir = currentUrl.pathname.endsWith("/")
+					? currentUrl.pathname
+					: currentUrl.pathname.slice(0, currentUrl.pathname.lastIndexOf("/") + 1);
+				const baseUrl = `${currentUrl.origin}${pathDir}`;
+				const mobileUrl = `${baseUrl}?code=${encodeURIComponent(code)}`;
 
 				const dataUrl = await QRCode.toDataURL(mobileUrl, {
 					width: 240,
