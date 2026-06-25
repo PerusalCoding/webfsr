@@ -38,6 +38,13 @@ interface SensorBarProps {
 	secondaryThreshold?: number;
 	secondaryThresholdLabel?: string;
 	secondaryThresholdColor?: string;
+	// When provided alongside secondaryThreshold, the bar becomes
+	// draggable for BOTH lines: a click/drag grabs whichever line
+	// (Trigger or Release) is closer to the pointer at mousedown time.
+	// Without this, the bar only ever drags the primary `threshold`
+	// (the original single-line behavior), even if secondaryThreshold
+	// is being displayed for reference.
+	onSecondaryThresholdChange?: (index: number, value: number) => void;
 }
 
 // Component for individual sensor bar
@@ -69,6 +76,7 @@ const SensorBar = ({
 	secondaryThreshold,
 	secondaryThresholdLabel = "Release",
 	secondaryThresholdColor = "rgba(0, 200, 120, 0.9)",
+	onSecondaryThresholdChange,
 }: SensorBarProps) => {
 	const isDarkMode = theme === "dark";
 	const defaultBgColor = backgroundColor || (isDarkMode ? "#171717" : "white");
@@ -78,44 +86,98 @@ const SensorBar = ({
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const isDragging = useRef<boolean>(false);
+	// Which line is currently being dragged -- only meaningful when
+	// onSecondaryThresholdChange is provided (dual-line mode). "primary"
+	// is the original `threshold` (Trigger), "secondary" is
+	// `secondaryThreshold` (Release).
+	const draggingLine = useRef<"primary" | "secondary">("primary");
 	const [inputValue, setInputValue] = useState<string>(threshold.toString());
 	const [dimensions, setDimensions] = useState<{ width: number; height: number }>({
 		width: 0,
 		height: 0,
 	});
 
-	const updateThreshold = (y: number) => {
-		if (isLocked) return;
-
+	const yToValue = (y: number): number | null => {
 		const canvas = canvasRef.current;
-		if (!canvas) return;
+		if (!canvas) return null;
 
 		const rect = canvas.getBoundingClientRect();
 		const height = rect.height;
 
-		// Calculate threshold value based on click position
-		const newThreshold = Math.round(maxValue * (1 - (y - rect.top) / height));
-		const clampedValue = Math.max(0, Math.min(maxValue, newThreshold));
+		const raw = Math.round(maxValue * (1 - (y - rect.top) / height));
+		return Math.max(0, Math.min(maxValue, raw));
+	};
+
+	const updateThreshold = (y: number) => {
+		if (isLocked) return;
+
+		const clampedValue = yToValue(y);
+		if (clampedValue === null) return;
 
 		onThresholdChange(index, clampedValue);
+	};
+
+	// Decides which line (primary/Trigger or secondary/Release) a
+	// mousedown at the given Y position should grab -- whichever line's
+	// pixel position is closer to the click point. Only relevant when
+	// dual-line dragging is active (onSecondaryThresholdChange provided
+	// and secondaryThreshold has an actual value).
+	const pickNearestLine = (y: number): "primary" | "secondary" => {
+		if (secondaryThreshold === undefined || !onSecondaryThresholdChange) return "primary";
+
+		const canvas = canvasRef.current;
+		if (!canvas) return "primary";
+
+		const rect = canvas.getBoundingClientRect();
+		const height = rect.height;
+
+		const primaryY = rect.top + height - (threshold / maxValue) * height;
+		const secondaryY = rect.top + height - (secondaryThreshold / maxValue) * height;
+
+		return Math.abs(y - secondaryY) < Math.abs(y - primaryY) ? "secondary" : "primary";
 	};
 
 	const handleMouseDown = (e: React.MouseEvent) => {
 		if (isLocked) return;
 
 		isDragging.current = true;
-		updateThreshold(e.clientY);
+		draggingLine.current = pickNearestLine(e.clientY);
+
+		if (draggingLine.current === "secondary" && onSecondaryThresholdChange) {
+			const v = yToValue(e.clientY);
+			if (v !== null) onSecondaryThresholdChange(index, v);
+		} else {
+			updateThreshold(e.clientY);
+		}
 	};
 
 	const handleMouseMove = (e: React.MouseEvent) => {
 		if (!isDragging.current) return;
-		updateThreshold(e.clientY);
+
+		if (draggingLine.current === "secondary" && onSecondaryThresholdChange) {
+			const v = yToValue(e.clientY);
+			if (v !== null) onSecondaryThresholdChange(index, v);
+		} else {
+			updateThreshold(e.clientY);
+		}
 	};
 
 	// Update input value when threshold changes
 	useEffect(() => {
 		setInputValue(threshold.toString());
 	}, [threshold]);
+
+	// Mirrors inputValue above, but for the secondary (Release) line --
+	// only meaningful when secondaryThreshold/onSecondaryThresholdChange
+	// are provided.
+	const [secondaryInputValue, setSecondaryInputValue] = useState<string>(
+		secondaryThreshold !== undefined ? secondaryThreshold.toString() : "",
+	);
+	useEffect(() => {
+		if (secondaryThreshold !== undefined) {
+			setSecondaryInputValue(secondaryThreshold.toString());
+		}
+	}, [secondaryThreshold]);
 
 	const validateAndUpdateThreshold = () => {
 		if (isLocked) return;
@@ -126,6 +188,17 @@ const SensorBar = ({
 		} else {
 			// Reset input to current threshold if invalid
 			setInputValue(threshold.toString());
+		}
+	};
+
+	const validateAndUpdateSecondaryThreshold = () => {
+		if (isLocked || !onSecondaryThresholdChange) return;
+
+		const newValue = Number.parseInt(secondaryInputValue, 10);
+		if (!Number.isNaN(newValue) && newValue >= 0 && newValue <= maxValue) {
+			onSecondaryThresholdChange(index, newValue);
+		} else if (secondaryThreshold !== undefined) {
+			setSecondaryInputValue(secondaryThreshold.toString());
 		}
 	};
 
@@ -141,10 +214,25 @@ const SensorBar = ({
 		onThresholdChange(index, newValue);
 	};
 
+	const handleSecondaryIncrement = () => {
+		if (isLocked || !onSecondaryThresholdChange || secondaryThreshold === undefined) return;
+		onSecondaryThresholdChange(index, Math.min(secondaryThreshold + 1, maxValue));
+	};
+
+	const handleSecondaryDecrement = () => {
+		if (isLocked || !onSecondaryThresholdChange || secondaryThreshold === undefined) return;
+		onSecondaryThresholdChange(index, Math.max(secondaryThreshold - 1, 0));
+	};
+
 	useEffect(() => {
 		const onMouseMove = (e: MouseEvent) => {
 			if (!isDragging.current) return;
-			updateThreshold(e.clientY);
+			if (draggingLine.current === "secondary" && onSecondaryThresholdChange) {
+				const v = yToValue(e.clientY);
+				if (v !== null) onSecondaryThresholdChange(index, v);
+			} else {
+				updateThreshold(e.clientY);
+			}
 		};
 
 		const onMouseUp = () => {
@@ -159,7 +247,7 @@ const SensorBar = ({
 			document.removeEventListener("mousemove", onMouseMove);
 			document.removeEventListener("mouseup", onMouseUp);
 		};
-	}, [updateThreshold]);
+	}, [updateThreshold, onSecondaryThresholdChange, secondaryThreshold, threshold]);
 
 	// Set up the resize observer to detect container size changes
 	useEffect(() => {
@@ -384,39 +472,88 @@ const SensorBar = ({
 				/>
 			</div>
 			{!hideControls && (
-				<div className="flex items-center gap-0.5 w-full justify-center">
-					<Button
-						variant="link"
-						size="icon"
-						className="size-6 shrink-0 p-0 hover:cursor-pointer"
-						onClick={handleDecrement}
-						disabled={isLocked}
-						aria-label="Decrease threshold"
-					>
-						<Minus className="size-3" />
-					</Button>
-					<Input
-						type="text"
-						value={inputValue}
-						onChange={(e) => setInputValue(e.target.value)}
-						onBlur={() => validateAndUpdateThreshold()}
-						onKeyDown={(e) => {
-							if (e.key === "Enter") validateAndUpdateThreshold();
-						}}
-						disabled={isLocked}
-						className="h-6 text-xs text-center px-0.5 w-12 min-w-12 shadow-none rounded-sm"
-						aria-label={`Threshold value for ${label}`}
-					/>
-					<Button
-						variant="link"
-						size="icon"
-						className="size-6 shrink-0 p-0 hover:cursor-pointer"
-						onClick={handleIncrement}
-						disabled={isLocked}
-						aria-label="Increase threshold"
-					>
-						<Plus className="size-3" />
-					</Button>
+				<div className="flex items-center gap-1.5 w-full justify-center">
+					{/* Trigger (primary) controls -- colored red to match
+					    the solid red line on the bar when dual-line mode
+					    is active (secondaryThreshold provided). In casual
+					    single-line mode this just looks like the original
+					    neutral control row. */}
+					<div className="flex items-center gap-0.5">
+						<Button
+							variant="link"
+							size="icon"
+							className="size-6 shrink-0 p-0 hover:cursor-pointer"
+							onClick={handleDecrement}
+							disabled={isLocked}
+							aria-label="Decrease threshold"
+						>
+							<Minus className={`size-3 ${secondaryThreshold !== undefined ? "text-red-500" : ""}`} />
+						</Button>
+						<Input
+							type="text"
+							value={inputValue}
+							onChange={(e) => setInputValue(e.target.value)}
+							onBlur={() => validateAndUpdateThreshold()}
+							onKeyDown={(e) => {
+								if (e.key === "Enter") validateAndUpdateThreshold();
+							}}
+							disabled={isLocked}
+							className={`h-6 text-xs text-center px-0.5 w-12 min-w-12 shadow-none rounded-sm ${secondaryThreshold !== undefined ? "border-red-500/60 text-red-500 focus-visible:ring-red-500/40" : ""}`}
+							aria-label={`Trigger threshold value for ${label}`}
+							title="Trigger (ON)"
+						/>
+						<Button
+							variant="link"
+							size="icon"
+							className="size-6 shrink-0 p-0 hover:cursor-pointer"
+							onClick={handleIncrement}
+							disabled={isLocked}
+							aria-label="Increase threshold"
+						>
+							<Plus className={`size-3 ${secondaryThreshold !== undefined ? "text-red-500" : ""}`} />
+						</Button>
+					</div>
+
+					{/* Release (secondary) controls -- only rendered when
+					    dual-line mode is active. Colored green to match
+					    the dashed green Release line on the bar. */}
+					{secondaryThreshold !== undefined && onSecondaryThresholdChange && (
+						<div className="flex items-center gap-0.5">
+							<Button
+								variant="link"
+								size="icon"
+								className="size-6 shrink-0 p-0 hover:cursor-pointer"
+								onClick={handleSecondaryDecrement}
+								disabled={isLocked}
+								aria-label="Decrease release threshold"
+							>
+								<Minus className="size-3 text-green-500" />
+							</Button>
+							<Input
+								type="text"
+								value={secondaryInputValue}
+								onChange={(e) => setSecondaryInputValue(e.target.value)}
+								onBlur={() => validateAndUpdateSecondaryThreshold()}
+								onKeyDown={(e) => {
+									if (e.key === "Enter") validateAndUpdateSecondaryThreshold();
+								}}
+								disabled={isLocked}
+								className="h-6 text-xs text-center px-0.5 w-12 min-w-12 shadow-none rounded-sm border-green-500/60 text-green-500 focus-visible:ring-green-500/40"
+								aria-label={`Release threshold value for ${label}`}
+								title="Release (OFF)"
+							/>
+							<Button
+								variant="link"
+								size="icon"
+								className="size-6 shrink-0 p-0 hover:cursor-pointer"
+								onClick={handleSecondaryIncrement}
+								disabled={isLocked}
+								aria-label="Increase release threshold"
+							>
+								<Plus className="size-3 text-green-500" />
+							</Button>
+						</div>
+					)}
 				</div>
 			)}
 		</div>

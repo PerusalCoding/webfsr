@@ -1661,24 +1661,46 @@ const Dashboard = () => {
 	}, [numSensors, thresholds.length, sensorLabels.length, openColorPickers.length, activeProfileId]);
 
 	const handleThresholdChange = useStableCallback((index: number, value: number) => {
+		if (advancedTuningEnabled) {
+			// Advanced mode REPLACES the casual single-threshold model
+			// rather than just locking it out -- dragging the main bar's
+			// red (Trigger) line now sends the "y" command directly,
+			// updating the same underlying value the Sensor Tuning panel
+			// controls. liveTriggerValues is updated immediately here
+			// too, rather than waiting on the next "p" response, so the
+			// bar's own line doesn't visually lag behind the drag.
+			setLiveTriggerValues((prev) => {
+				const next = [...prev];
+				next[index] = value;
+				return next;
+			});
+			if (connected) sendText(`y ${index} ${value}\n`);
+			return;
+		}
+
 		const newThresholds = [...thresholds];
 		newThresholds[index] = value;
 		setThresholds(newThresholds);
 
 		if (activeProfileId) updateThresholds(newThresholds);
 
-		// IMPORTANT: while Advanced Sensor Tuning is on, do NOT send the
-		// legacy "<index> <value>" command. Firmware-side, that command
-		// sets BOTH trigger and release threshold from a single number
-		// (release = trigger - 20), which would silently collapse any
-		// wider gap configured in Advanced mode every time this slider
-		// is touched. The main page bar still updates visually/locally
-		// and still syncs to the active profile, it just stops being the
-		// thing that talks to the firmware once Advanced mode owns that.
-		if (connected && !advancedTuningEnabled) {
+		if (connected) {
 			const message = `${index} ${value}\n`;
 			sendText(message);
 		}
+	});
+
+	// Parallel handler for dragging the Release (green) line directly on
+	// the main page bar -- only relevant/wired up when Advanced mode is
+	// on, since that's the only time SensorBar is given a
+	// secondaryThreshold + this callback together (see sensorBars below).
+	const handleSecondaryThresholdChange = useStableCallback((index: number, value: number) => {
+		setLiveReleaseValues((prev) => {
+			const next = [...prev];
+			next[index] = value;
+			return next;
+		});
+		if (connected) sendText(`r ${index} ${value}\n`);
 	});
 
 	const onLabelChangeStable = useStableCallback((index: number, value: string) => {
@@ -1763,11 +1785,12 @@ const Dashboard = () => {
 					thresholdColor={colorSettings.thresholdColor}
 					useThresholdColor={barSettings.useThresholdColor}
 					useGradient={barSettings.useBarGradient}
-					isLocked={generalSettings.lockThresholds || advancedTuningEnabled}
+					isLocked={generalSettings.lockThresholds}
 					theme={resolvedTheme}
 					secondaryThreshold={advancedTuningEnabled ? liveReleaseValues[index] : undefined}
 					secondaryThresholdLabel="Release"
 					secondaryThresholdColor="rgba(34, 197, 94, 0.9)"
+					onSecondaryThresholdChange={advancedTuningEnabled ? handleSecondaryThresholdChange : undefined}
 				/>
 			</div>
 		);
@@ -1998,8 +2021,9 @@ const Dashboard = () => {
 								<div className="px-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm grow">
 									{advancedTuningEnabled && (
 										<p className="text-[11px] text-amber-500 px-1 pt-2">
-											Advanced Sensor Tuning is on — threshold dragging here is disabled.
-											Adjust Trigger/Release in the Sensor Tuning panel instead.
+											Advanced Sensor Tuning is on — drag the red line for Trigger,
+											the green dashed line for Release. Click closest to whichever
+											line you want to move.
 										</p>
 									)}
 									<div className="grid grid-flow-col auto-cols-fr gap-4 h-full w-full py-2">{sensorBars}</div>
