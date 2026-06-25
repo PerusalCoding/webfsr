@@ -75,6 +75,9 @@ const MobileDashboard = ({
 		remoteSingleBarColor,
 		remoteIsLocked,
 		remoteTheme,
+		remoteAdvancedTuningEnabled,
+		remoteLiveTriggerValues,
+		remoteLiveReleaseValues,
 		updateRemoteData,
 		updateSensorValues,
 		reset: resetRemoteStore,
@@ -221,10 +224,22 @@ const MobileDashboard = ({
 		resetRemoteStore();
 	};
 
-	// Handle threshold change from mobile
+	// Handle threshold change from mobile -- sends the legacy "threshold"
+	// message when Advanced Tuning isn't active on the synced profile, or
+	// "trigger" when it is, so desktop routes it through the same y/r
+	// firmware commands Advanced mode already uses for local dragging.
 	const handleMobileThresholdChange = (index: number, value: number) => {
-		// Send to desktop
-		sendRemote({ type: "threshold", index, value });
+		if (remoteAdvancedTuningEnabled) {
+			sendRemote({ type: "trigger", index, value });
+		} else {
+			sendRemote({ type: "threshold", index, value });
+		}
+	};
+
+	// Only relevant when Advanced Tuning is active -- adjusts the Release
+	// (OFF) value instead of Trigger.
+	const handleMobileSecondaryThresholdChange = (index: number, value: number) => {
+		sendRemote({ type: "release", index, value });
 	};
 
 	const getColor = (index: number) => {
@@ -446,7 +461,11 @@ const MobileDashboard = ({
 							key={`sensor-${i}`}
 							label={remoteSensorLabels[i] || `Sensor ${i + 1}`}
 							value={remoteSensorValues[i] ?? 0}
-							threshold={remoteThresholds[i] ?? 512}
+							threshold={
+								remoteAdvancedTuningEnabled
+									? (remoteLiveTriggerValues[i] ?? remoteThresholds[i] ?? 512)
+									: (remoteThresholds[i] ?? 512)
+							}
 							color={getColor(i)}
 							thresholdColor={effectiveThresholdColor}
 							useThresholdColor={effectiveUseThresholdColor}
@@ -454,6 +473,8 @@ const MobileDashboard = ({
 							onThresholdChange={handleMobileThresholdChange}
 							isLocked={remoteIsLocked}
 							theme={effectiveTheme}
+							secondaryThreshold={remoteAdvancedTuningEnabled ? remoteLiveReleaseValues[i] : undefined}
+							onSecondaryThresholdChange={remoteAdvancedTuningEnabled ? handleMobileSecondaryThresholdChange : undefined}
 						/>
 					))}
 				</div>

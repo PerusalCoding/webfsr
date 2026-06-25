@@ -18,11 +18,25 @@ export type ProfileSyncPayload = {
 	singleBarColor: string;
 	isLocked: boolean;
 	theme: "light" | "dark";
+	// Advanced Sensor Tuning fields. When advancedTuningEnabled is false,
+	// the mobile UI behaves exactly as before (single threshold marker,
+	// "threshold" messages). When true, liveTriggerValues/
+	// liveReleaseValues carry the dual-threshold values the desktop is
+	// currently using, and mobile should show both markers and send
+	// "trigger"/"release" messages instead of the legacy "threshold" one.
+	advancedTuningEnabled?: boolean;
+	liveTriggerValues?: number[];
+	liveReleaseValues?: number[];
 };
 
 // Mobile → Desktop
 export type MobileMessage =
 	| { type: "threshold"; index: number; value: number }
+	// New: sent instead of "threshold" when advancedTuningEnabled is true
+	// on the synced profile -- desktop maps these straight onto the same
+	// "y"/"r" firmware commands Advanced mode already uses locally.
+	| { type: "trigger"; index: number; value: number }
+	| { type: "release"; index: number; value: number }
 	| { type: "pong" }
 	| { type: "ready" };
 
@@ -40,6 +54,10 @@ interface RemoteState {
 	remoteIsLocked: boolean;
 	remoteTheme: "light" | "dark";
 	lastSyncTimestamp: number;
+	// Advanced Sensor Tuning mirrors of the above
+	remoteAdvancedTuningEnabled: boolean;
+	remoteLiveTriggerValues: number[];
+	remoteLiveReleaseValues: number[];
 
 	// Actions
 	updateRemoteData: (data: ProfileSyncPayload) => void;
@@ -59,6 +77,9 @@ const initialState = {
 	remoteIsLocked: false,
 	remoteTheme: "dark" as const,
 	lastSyncTimestamp: 0,
+	remoteAdvancedTuningEnabled: false,
+	remoteLiveTriggerValues: [],
+	remoteLiveReleaseValues: [],
 };
 
 export const useRemoteStore = create<RemoteState>((set) => ({
@@ -76,6 +97,9 @@ export const useRemoteStore = create<RemoteState>((set) => ({
 			remoteIsLocked: data.isLocked,
 			remoteTheme: data.theme,
 			lastSyncTimestamp: Date.now(),
+			remoteAdvancedTuningEnabled: data.advancedTuningEnabled ?? false,
+			remoteLiveTriggerValues: data.liveTriggerValues ?? [],
+			remoteLiveReleaseValues: data.liveReleaseValues ?? [],
 		}),
 
 	updateSensorValues: (values) =>
@@ -92,3 +116,6 @@ export const useRemoteThresholds = () => useRemoteStore((state) => state.remoteT
 export const useRemoteSensorLabels = () => useRemoteStore((state) => state.remoteSensorLabels);
 export const useRemoteTheme = () => useRemoteStore((state) => state.remoteTheme);
 export const useRemoteIsLocked = () => useRemoteStore((state) => state.remoteIsLocked);
+export const useRemoteAdvancedTuningEnabled = () => useRemoteStore((state) => state.remoteAdvancedTuningEnabled);
+export const useRemoteLiveTriggerValues = () => useRemoteStore((state) => state.remoteLiveTriggerValues);
+export const useRemoteLiveReleaseValues = () => useRemoteStore((state) => state.remoteLiveReleaseValues);

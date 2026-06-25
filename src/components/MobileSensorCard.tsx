@@ -14,6 +14,12 @@ interface MobileSensorCardProps {
 	onThresholdChange: (index: number, value: number) => void;
 	isLocked?: boolean;
 	theme?: "light" | "dark";
+	// Optional second marker + stepper group, shown only when Advanced
+	// Sensor Tuning is active on the synced desktop profile. Mirrors the
+	// dual-line treatment added to SensorBar.tsx on desktop -- omitting
+	// these props renders exactly the original single-threshold card.
+	secondaryThreshold?: number;
+	onSecondaryThresholdChange?: (index: number, value: number) => void;
 }
 
 const MobileSensorCard = ({
@@ -27,16 +33,26 @@ const MobileSensorCard = ({
 	onThresholdChange,
 	isLocked = false,
 	theme,
+	secondaryThreshold,
+	onSecondaryThresholdChange,
 }: MobileSensorCardProps) => {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+	const hasDualLine = secondaryThreshold !== undefined && !!onSecondaryThresholdChange;
 
 	const handleAdjust = (step: number) => {
 		if (isLocked) return;
 
 		const newValue = Math.max(0, Math.min(threshold + step, maxSensorVal));
 		onThresholdChange(index, newValue);
+	};
+
+	const handleSecondaryAdjust = (step: number) => {
+		if (isLocked || !onSecondaryThresholdChange || secondaryThreshold === undefined) return;
+
+		const newValue = Math.max(0, Math.min(secondaryThreshold + step, maxSensorVal));
+		onSecondaryThresholdChange(index, newValue);
 	};
 
 	useEffect(() => {
@@ -86,7 +102,8 @@ const MobileSensorCard = ({
 		ctx.fillStyle = activeColor;
 		ctx.fillRect(0, 0, barWidth, height);
 
-		// Threshold marker (vertical line)
+		// Threshold marker (vertical line) -- Trigger in dual-line mode,
+		// the only marker in legacy single-threshold mode.
 		const thresholdX = (threshold / maxSensorVal) * width;
 		ctx.beginPath();
 		ctx.moveTo(thresholdX, 0);
@@ -95,11 +112,27 @@ const MobileSensorCard = ({
 		ctx.lineWidth = 3;
 		ctx.stroke();
 
+		// Secondary (Release) marker -- dashed green line, only drawn
+		// when dual-line mode is active. Matches the desktop SensorBar
+		// styling so the same concept looks consistent across both UIs.
+		if (hasDualLine && secondaryThreshold !== undefined) {
+			const secondaryX = (secondaryThreshold / maxSensorVal) * width;
+			ctx.save();
+			ctx.setLineDash([6, 4]);
+			ctx.beginPath();
+			ctx.moveTo(secondaryX, 0);
+			ctx.lineTo(secondaryX, height);
+			ctx.strokeStyle = "rgba(34, 197, 94, 0.9)";
+			ctx.lineWidth = 3;
+			ctx.stroke();
+			ctx.restore();
+		}
+
 		// Border
 		ctx.strokeStyle = isDarkMode ? "rgba(255, 255, 255, 0.15)" : "rgba(0, 0, 0, 0.15)";
 		ctx.lineWidth = 1;
 		ctx.strokeRect(0, 0, width, height);
-	}, [dimensions, value, threshold, color, thresholdColor, useThresholdColor, theme]);
+	}, [dimensions, value, threshold, color, thresholdColor, useThresholdColor, theme, hasDualLine, secondaryThreshold]);
 
 	return (
 		<div className="rounded-xl border border-border bg-card p-4 shadow-sm">
@@ -111,50 +144,102 @@ const MobileSensorCard = ({
 			</div>
 
 			{/* Value and threshold display */}
-			<div className="flex justify-between text-xs text-muted-foreground mb-4 font-mono tabular-nums">
+			<div className="flex justify-between text-xs text-muted-foreground mb-1 font-mono tabular-nums">
 				<span>Value: {value}</span>
-				<span>Threshold: {threshold}</span>
+				<span className={hasDualLine ? "text-red-500" : ""}>
+					{hasDualLine ? "Trigger" : "Threshold"}: {threshold}
+				</span>
 			</div>
+			{hasDualLine && (
+				<div className="flex justify-end text-xs text-green-500 mb-3 font-mono tabular-nums">
+					<span>Release: {secondaryThreshold}</span>
+				</div>
+			)}
+			{!hasDualLine && <div className="mb-3" />}
 
-			{/* Stepper buttons */}
+			{/* Trigger/Threshold stepper buttons -- red label when in
+			    dual-line mode, otherwise unchanged from the original
+			    neutral styling. */}
 			<div className="flex gap-2">
 				<Button
 					variant="outline"
-					className="flex-1 h-14 text-lg font-medium active:scale-95 transition-transform"
+					className={`flex-1 h-14 text-lg font-medium active:scale-95 transition-transform ${hasDualLine ? "border-red-500/50 text-red-500" : ""}`}
 					onClick={() => handleAdjust(-10)}
 					disabled={isLocked || threshold <= 0}
-					aria-label={`Decrease threshold by 10 for ${label}`}
+					aria-label={`Decrease ${hasDualLine ? "trigger" : "threshold"} by 10 for ${label}`}
 				>
 					-10
 				</Button>
 				<Button
 					variant="outline"
-					className="flex-1 h-14 text-lg font-medium active:scale-95 transition-transform"
+					className={`flex-1 h-14 text-lg font-medium active:scale-95 transition-transform ${hasDualLine ? "border-red-500/50 text-red-500" : ""}`}
 					onClick={() => handleAdjust(-1)}
 					disabled={isLocked || threshold <= 0}
-					aria-label={`Decrease threshold by 1 for ${label}`}
+					aria-label={`Decrease ${hasDualLine ? "trigger" : "threshold"} by 1 for ${label}`}
 				>
 					-1
 				</Button>
 				<Button
 					variant="outline"
-					className="flex-1 h-14 text-lg font-medium active:scale-95 transition-transform"
+					className={`flex-1 h-14 text-lg font-medium active:scale-95 transition-transform ${hasDualLine ? "border-red-500/50 text-red-500" : ""}`}
 					onClick={() => handleAdjust(1)}
 					disabled={isLocked || threshold >= maxSensorVal}
-					aria-label={`Increase threshold by 1 for ${label}`}
+					aria-label={`Increase ${hasDualLine ? "trigger" : "threshold"} by 1 for ${label}`}
 				>
 					+1
 				</Button>
 				<Button
 					variant="outline"
-					className="flex-1 h-14 text-lg font-medium active:scale-95 transition-transform"
+					className={`flex-1 h-14 text-lg font-medium active:scale-95 transition-transform ${hasDualLine ? "border-red-500/50 text-red-500" : ""}`}
 					onClick={() => handleAdjust(10)}
 					disabled={isLocked || threshold >= maxSensorVal}
-					aria-label={`Increase threshold by 10 for ${label}`}
+					aria-label={`Increase ${hasDualLine ? "trigger" : "threshold"} by 10 for ${label}`}
 				>
 					+10
 				</Button>
 			</div>
+
+			{/* Release stepper buttons -- only rendered in dual-line mode. */}
+			{hasDualLine && (
+				<div className="flex gap-2 mt-2">
+					<Button
+						variant="outline"
+						className="flex-1 h-14 text-lg font-medium active:scale-95 transition-transform border-green-500/50 text-green-500"
+						onClick={() => handleSecondaryAdjust(-10)}
+						disabled={isLocked || (secondaryThreshold ?? 0) <= 0}
+						aria-label={`Decrease release by 10 for ${label}`}
+					>
+						-10
+					</Button>
+					<Button
+						variant="outline"
+						className="flex-1 h-14 text-lg font-medium active:scale-95 transition-transform border-green-500/50 text-green-500"
+						onClick={() => handleSecondaryAdjust(-1)}
+						disabled={isLocked || (secondaryThreshold ?? 0) <= 0}
+						aria-label={`Decrease release by 1 for ${label}`}
+					>
+						-1
+					</Button>
+					<Button
+						variant="outline"
+						className="flex-1 h-14 text-lg font-medium active:scale-95 transition-transform border-green-500/50 text-green-500"
+						onClick={() => handleSecondaryAdjust(1)}
+						disabled={isLocked || (secondaryThreshold ?? 0) >= maxSensorVal}
+						aria-label={`Increase release by 1 for ${label}`}
+					>
+						+1
+					</Button>
+					<Button
+						variant="outline"
+						className="flex-1 h-14 text-lg font-medium active:scale-95 transition-transform border-green-500/50 text-green-500"
+						onClick={() => handleSecondaryAdjust(10)}
+						disabled={isLocked || (secondaryThreshold ?? 0) >= maxSensorVal}
+						aria-label={`Increase release by 10 for ${label}`}
+					>
+						+10
+					</Button>
+				</div>
+			)}
 		</div>
 	);
 };

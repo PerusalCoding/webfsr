@@ -759,7 +759,21 @@ function loadTuning(count: number): SensorTuning[] {
 	try {
 		const raw = localStorage.getItem(LS_TUNING_KEY);
 		const saved = raw ? (JSON.parse(raw) as SensorTuning[]) : null;
-		if (saved && saved.length >= count) return saved.slice(0, count);
+		if (saved && saved.length > 0) {
+			// Never truncate saved data on load, even if `count` (which can
+			// be a transient fallback value like 4) is smaller than what
+			// was actually saved -- only pad with defaults if we need MORE
+			// entries than what's saved. Truncating here risked losing
+			// Trigger/Release/Gain for sensors beyond `count` if this ever
+			// ran with a stale/fallback count at mount time.
+			if (saved.length >= count) return saved;
+			return [
+				...saved,
+				...Array.from({ length: count - saved.length }, (_, i) => ({
+					trigger: 700, release: 300, gainX100: 100, buttonGroup: saved.length + i,
+				})),
+			];
+		}
 	} catch {}
 	return Array.from({ length: count }, (_, i) => ({ trigger: 700, release: 300, gainX100: 100, buttonGroup: i }));
 }
@@ -826,16 +840,28 @@ function SensorTuningSection({
 		onTuningValuesChange?.(tuning.map((t) => t.trigger), tuning.map((t) => t.release));
 	}, [tuning, onTuningValuesChange]);
 
-	// Grow/shrink tuning array if sensor count changes
+	// Grow/shrink tuning array if sensor count changes.
+	//
+	// IMPORTANT: only do this when numSensors is a TRUSTWORTHY real count
+	// from the firmware (i.e. > 0), never based on the effectiveCount
+	// fallback-to-4 used elsewhere for display purposes. numSensors
+	// briefly resets to 0 in the global store during a disconnect/
+	// reconnect cycle (see useSerialPort.ts) -- if this effect reacted
+	// to that and "resized" tuning down to the fallback of 4, it would
+	// PERMANENTLY destroy and overwrite (via saveTuning) any
+	// Trigger/Release/Gain values for sensors 4-7 on an 6 or 8-sensor
+	// pad, the moment numSensors flickered to 0 mid-reconnect -- even
+	// though the real sensor count never actually changed. This was the
+	// cause of Advanced Tuning settings appearing to "reset" on reconnect.
 	useEffect(() => {
-		if (effectiveCount !== tuning.length) {
-			const next = Array.from({ length: effectiveCount }, (_, i) =>
+		if (numSensors > 0 && numSensors !== tuning.length) {
+			const next = Array.from({ length: numSensors }, (_, i) =>
 				tuning[i] ?? { trigger: 700, release: 300, gainX100: 100, buttonGroup: i }
 			);
 			setTuning(next);
 			saveTuning(next);
 		}
-	}, [effectiveCount]);
+	}, [numSensors]);
 
 	// Parse "p <sensor> <trigger> <release> <gain> <buttonGroup> <liveValue>"
 	// responses from the firmware so the UI reflects what's actually saved
@@ -1424,6 +1450,27 @@ const Dashboard = () => {
 		if (message.type === "threshold") {
 			const { index, value } = message as { type: "threshold"; index: number; value: number };
 			handleThresholdChange(index, value);
+		} else if (message.type === "trigger") {
+			// Mirrors handleThresholdChange's Advanced-mode branch -- sent
+			// by mobile instead of "threshold" when the synced profile has
+			// advancedTuningEnabled=true. Updates the same liveTriggerValues
+			// the main page bars use, and sends the same "y" firmware
+			// command Advanced mode already uses when dragging locally.
+			const { index, value } = message as { type: "trigger"; index: number; value: number };
+			setLiveTriggerValues((prev) => {
+				const next = [...prev];
+				next[index] = value;
+				return next;
+			});
+			if (connected) sendText(`y ${index} ${value}\n`);
+		} else if (message.type === "release") {
+			const { index, value } = message as { type: "release"; index: number; value: number };
+			setLiveReleaseValues((prev) => {
+				const next = [...prev];
+				next[index] = value;
+				return next;
+			});
+			if (connected) sendText(`r ${index} ${value}\n`);
 		} else if (message.type === "ready") {
 			sendProfileSync();
 		}
@@ -1464,6 +1511,9 @@ const Dashboard = () => {
 			singleBarColor: colorSettings.singleBarColor,
 			isLocked: generalSettings.lockThresholds,
 			theme: resolvedTheme,
+			advancedTuningEnabled: advancedTuningEnabled,
+			liveTriggerValues,
+			liveReleaseValues,
 		};
 
 		sendRemote({ type: "sync", payload });
@@ -1483,6 +1533,9 @@ const Dashboard = () => {
 		colorSettings.singleBarColor,
 		generalSettings.lockThresholds,
 		resolvedTheme,
+		advancedTuningEnabled,
+		liveTriggerValues,
+		liveReleaseValues,
 	]);
 
 	const heartBeatDuration =
