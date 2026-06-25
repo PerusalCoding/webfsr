@@ -41,6 +41,13 @@ const MobileSensorCard = ({
 	const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
 	const hasDualLine = secondaryThreshold !== undefined && !!onSecondaryThresholdChange;
 
+	// Which line a touch-drag is currently moving -- only meaningful in
+	// dual-line mode. Mirrors the desktop SensorBar's draggingLine ref,
+	// just adapted to a horizontal bar (X position) instead of a
+	// vertical one (Y position).
+	const isDragging = useRef(false);
+	const draggingLine = useRef<"primary" | "secondary">("primary");
+
 	const handleAdjust = (step: number) => {
 		if (isLocked) return;
 
@@ -53,6 +60,69 @@ const MobileSensorCard = ({
 
 		const newValue = Math.max(0, Math.min(secondaryThreshold + step, maxSensorVal));
 		onSecondaryThresholdChange(index, newValue);
+	};
+
+	// Converts a touch's clientX into a 0-maxSensorVal value based on its
+	// horizontal position within the canvas.
+	const xToValue = (clientX: number): number | null => {
+		const canvas = canvasRef.current;
+		if (!canvas) return null;
+
+		const rect = canvas.getBoundingClientRect();
+		const raw = Math.round(maxSensorVal * ((clientX - rect.left) / rect.width));
+		return Math.max(0, Math.min(maxSensorVal, raw));
+	};
+
+	// Decides whether a touch at the given X should grab the Trigger
+	// (primary) or Release (secondary) line -- whichever line's pixel
+	// position is closer to the touch point. Same logic as desktop
+	// SensorBar's pickNearestLine, just X-based instead of Y-based.
+	const pickNearestLine = (clientX: number): "primary" | "secondary" => {
+		if (!hasDualLine || secondaryThreshold === undefined) return "primary";
+
+		const canvas = canvasRef.current;
+		if (!canvas) return "primary";
+
+		const rect = canvas.getBoundingClientRect();
+		const primaryX = rect.left + (threshold / maxSensorVal) * rect.width;
+		const secondaryX = rect.left + (secondaryThreshold / maxSensorVal) * rect.width;
+
+		return Math.abs(clientX - secondaryX) < Math.abs(clientX - primaryX) ? "secondary" : "primary";
+	};
+
+	const applyDragValue = (clientX: number, line: "primary" | "secondary") => {
+		const value = xToValue(clientX);
+		if (value === null) return;
+
+		if (line === "secondary" && onSecondaryThresholdChange) {
+			onSecondaryThresholdChange(index, value);
+		} else {
+			onThresholdChange(index, value);
+		}
+	};
+
+	const handleTouchStart = (e: React.TouchEvent) => {
+		if (isLocked) return;
+		const touch = e.touches[0];
+		if (!touch) return;
+
+		isDragging.current = true;
+		draggingLine.current = pickNearestLine(touch.clientX);
+		applyDragValue(touch.clientX, draggingLine.current);
+	};
+
+	const handleTouchMove = (e: React.TouchEvent) => {
+		if (!isDragging.current || isLocked) return;
+		const touch = e.touches[0];
+		if (!touch) return;
+
+		// Prevent the page from scrolling while dragging on the bar.
+		e.preventDefault();
+		applyDragValue(touch.clientX, draggingLine.current);
+	};
+
+	const handleTouchEnd = () => {
+		isDragging.current = false;
 	};
 
 	useEffect(() => {
@@ -139,7 +209,14 @@ const MobileSensorCard = ({
 			<div className="mb-3 text-sm font-semibold text-foreground">{label}</div>
 
 			{/* Horizontal bar */}
-			<div ref={containerRef} className="h-10 w-full rounded-lg overflow-hidden mb-3">
+			<div
+				ref={containerRef}
+				className="h-10 w-full rounded-lg overflow-hidden mb-3 touch-none"
+				onTouchStart={handleTouchStart}
+				onTouchMove={handleTouchMove}
+				onTouchEnd={handleTouchEnd}
+				onTouchCancel={handleTouchEnd}
+			>
 				<canvas ref={canvasRef} className="w-full h-full" />
 			</div>
 
