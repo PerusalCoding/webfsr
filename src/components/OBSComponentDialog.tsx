@@ -410,7 +410,19 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 		c != null && ((c as HeartrateConfig).mode === "current" || (c as HeartrateConfig).mode === "graph");
 
 	const generateUrl = () => {
-		const baseUrl = `${window.location.origin}/obs/${selectedComponent}/`;
+		// IMPORTANT: window.location.origin only gives the domain root
+		// (e.g. "https://perusalcoding.github.io"), NOT the "/webfsr/"
+		// subpath this site is actually deployed at on GitHub Pages.
+		// Using origin alone produced a link that 404s, since the real
+		// app (and its obs/* sub-pages) live one level deeper. Building
+		// from location.href's directory instead correctly preserves
+		// whatever subpath the page is actually being served from --
+		// same fix as the QR pairing URL in PairingQRModal.tsx.
+		const currentUrl = new URL(window.location.href);
+		const pathDir = currentUrl.pathname.endsWith("/")
+			? currentUrl.pathname
+			: currentUrl.pathname.slice(0, currentUrl.pathname.lastIndexOf("/") + 1);
+		const baseUrl = `${currentUrl.origin}${pathDir}obs/${selectedComponent}/`;
 		const pwd = (passwordProp ?? activeProfile?.obsPassword) || "YOUR_OBS_PASSWORD_HERE";
 
 		const params = new URLSearchParams({ pwd: pwd });

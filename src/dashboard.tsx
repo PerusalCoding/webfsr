@@ -745,15 +745,21 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition }: 
 // gain multiplier for weaker FSR variants (e.g. UX FSR 406).
 
 interface SensorTuning {
-	trigger: number;     // 0-1023, ON threshold
-	release: number;     // 0-1023, OFF threshold (must be < trigger)
-	gainX100: number;    // 10-500, where 100 = 1.0x
-	buttonGroup: number; // sensors sharing the same group register as ONE
-	                     // joystick button to ITGMania. Defaults to the
-	                     // sensor's own index (no sharing).
+	trigger: number;          // 0-1023, ON threshold
+	release: number;          // 0-1023, OFF threshold (must be < trigger)
+	gainX100: number;         // 10-500, where 100 = 1.0x
+	buttonGroup: number;      // sensors sharing the same group register as ONE
+	                          // joystick button to ITGMania. Defaults to the
+	                          // sensor's own index (no sharing).
+	releaseDebounceMs: number; // 0-100ms. How long the sensor must read
+	                          // continuously below Release before actually
+	                          // releasing -- protects long holds from being
+	                          // cut short by brief, real-world pressure
+	                          // noise (e.g. resting weight shifting on a
+	                          // metal pad panel). 0 = instant release.
 }
 
-const LS_TUNING_KEY = "webfsr_sensor_tuning_v2";
+const LS_TUNING_KEY = "webfsr_sensor_tuning_v3";
 
 function loadTuning(count: number): SensorTuning[] {
 	try {
@@ -770,12 +776,12 @@ function loadTuning(count: number): SensorTuning[] {
 			return [
 				...saved,
 				...Array.from({ length: count - saved.length }, (_, i) => ({
-					trigger: 700, release: 300, gainX100: 100, buttonGroup: saved.length + i,
+					trigger: 700, release: 300, gainX100: 100, buttonGroup: saved.length + i, releaseDebounceMs: 15,
 				})),
 			];
 		}
 	} catch {}
-	return Array.from({ length: count }, (_, i) => ({ trigger: 700, release: 300, gainX100: 100, buttonGroup: i }));
+	return Array.from({ length: count }, (_, i) => ({ trigger: 700, release: 300, gainX100: 100, buttonGroup: i, releaseDebounceMs: 15 }));
 }
 function saveTuning(t: SensorTuning[]) {
 	localStorage.setItem(LS_TUNING_KEY, JSON.stringify(t));
@@ -856,7 +862,7 @@ function SensorTuningSection({
 	useEffect(() => {
 		if (numSensors > 0 && numSensors !== tuning.length) {
 			const next = Array.from({ length: numSensors }, (_, i) =>
-				tuning[i] ?? { trigger: 700, release: 300, gainX100: 100, buttonGroup: i }
+				tuning[i] ?? { trigger: 700, release: 300, gainX100: 100, buttonGroup: i, releaseDebounceMs: 15 }
 			);
 			setTuning(next);
 			saveTuning(next);
@@ -870,11 +876,18 @@ function SensorTuningSection({
 		if (!line.startsWith("p ")) return false;
 		const nums = line.slice(2).trim().split(/\s+/).map(Number);
 		if (nums.length < 6) return false;
-		const [sensor, trigger, release, gain, buttonGroup] = nums;
+		// Firmware now sends 7 numeric fields (added release_debounce_ms
+		// before the trailing live value) -- but tolerate the OLDER
+		// 6-field format too (sensor trigger release gain buttonGroup
+		// liveValue), falling back to a sane default debounce of 15ms so
+		// this doesn't break against a not-yet-reflashed pad.
+		const hasDebounceField = nums.length >= 7;
+		const [sensor, trigger, release, gain, buttonGroup, maybeDebounce] = nums;
+		const releaseDebounceMs = hasDebounceField ? maybeDebounce : 15;
 		setTuning((prev) => {
 			if (sensor < 0 || sensor >= prev.length) return prev;
 			const updated = [...prev];
-			updated[sensor] = { trigger, release, gainX100: gain, buttonGroup };
+			updated[sensor] = { trigger, release, gainX100: gain, buttonGroup, releaseDebounceMs };
 			saveTuning(updated);
 			return updated;
 		});
@@ -901,6 +914,7 @@ function SensorTuningSection({
 	const sendRelease = (i: number, val: number) => { if (connected) sendText(`r ${i} ${val}\n`); };
 	const sendGain    = (i: number, val: number) => { if (connected) sendText(`g ${i} ${val}\n`); };
 	const sendButtonGroup = (i: number, group: number) => { if (connected) sendText(`m ${i} ${group}\n`); };
+	const sendReleaseDebounce = (i: number, ms: number) => { if (connected) sendText(`d ${i} ${ms}\n`); };
 
 	const updateTuning = (i: number, patch: Partial<SensorTuning>) => {
 		const updated = tuning.map((t, idx) => idx === i ? { ...t, ...patch } : t);
@@ -912,6 +926,7 @@ function SensorTuningSection({
 	const commitRelease = (i: number, val: number) => { updateTuning(i, { release: val }); sendRelease(i, val); };
 	const commitGain    = (i: number, val: number) => { updateTuning(i, { gainX100: val }); sendGain(i, val); };
 	const commitButtonGroup = (i: number, group: number) => { updateTuning(i, { buttonGroup: group }); sendButtonGroup(i, group); };
+	const commitReleaseDebounce = (i: number, ms: number) => { updateTuning(i, { releaseDebounceMs: ms }); sendReleaseDebounce(i, ms); };
 
 	// Quick presets for common situations
 	const applyFastRetriggerPreset = (i: number) => {
@@ -990,7 +1005,7 @@ function SensorTuningSection({
 
 							{Array.from({ length: effectiveCount }, (_, position) => {
 								const i = displayOrder.length === effectiveCount ? (displayOrder[position] ?? position) : position;
-								const t = tuning[i] ?? { trigger: 700, release: 300, gainX100: 100 };
+								const t = tuning[i] ?? { trigger: 700, release: 300, gainX100: 100, buttonGroup: i, releaseDebounceMs: 15 };
 								const live = latestValues[i] ?? 0;
 								const label = sensorLabels[i] || `Sensor ${i + 1}`;
 								const isExpanded = expandedSensor === i;
@@ -1130,6 +1145,41 @@ function SensorTuningSection({
 											/>
 											<p className="text-[10px] text-muted-foreground">
 												Boosts weak FSR signals (e.g. UX FSR 406) before threshold comparison. 1.00x = no change.
+											</p>
+										</div>
+
+										{/* Release Debounce -- requires the sensor to read continuously
+										    below Release for this long before actually releasing.
+										    Protects long holds from being cut short by brief, real-world
+										    pressure noise (e.g. resting foot weight shifting on a metal
+										    pad panel as it flexes). 0 = instant release, no debounce. */}
+										<div className="flex flex-col gap-1">
+											<div className="flex items-center justify-between">
+												<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
+													Release Debounce
+												</label>
+												<input
+													type="number" min={0} max={100} value={t.releaseDebounceMs}
+													className="w-14 text-xs font-mono text-muted-foreground bg-transparent border border-border rounded px-1 py-0.5 text-right focus:outline-none focus:ring-1 focus:ring-ring"
+													onChange={(e) => {
+														const v = Math.max(0, Math.min(100, Number(e.target.value) || 0));
+														updateTuning(i, { releaseDebounceMs: v });
+													}}
+													onBlur={(e) => commitReleaseDebounce(i, Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+												/>
+											</div>
+											<input
+												type="range" min={0} max={100} step={1} value={t.releaseDebounceMs}
+												className="w-full h-1.5 accent-foreground cursor-pointer"
+												onChange={(e) => updateTuning(i, { releaseDebounceMs: Number(e.target.value) })}
+												onMouseUp={(e) => commitReleaseDebounce(i, Number((e.target as HTMLInputElement).value))}
+												onTouchEnd={(e) => commitReleaseDebounce(i, Number((e.target as HTMLInputElement).value))}
+											/>
+											<p className="text-[10px] text-muted-foreground">
+												Helps prevent missed holds from resting pressure noise on metal
+												panels. Default 15ms. Raise slightly (20-30ms) if you still get
+												held-misses with resting weight on a panel; keep low for fast
+												stream sections where instant release matters more.
 											</p>
 										</div>
 
