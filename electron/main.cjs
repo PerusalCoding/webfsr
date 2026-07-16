@@ -1,5 +1,8 @@
 const { app, BrowserWindow, dialog, ipcMain } = require('electron')
 const path = require('path')
+const fs = require('fs')
+const os = require('os')
+const { spawn } = require('child_process')
 const { WebSocketServer } = require('ws')
 
 // Enable WebSerial and other experimental web platform features
@@ -83,6 +86,111 @@ function stopItgManiaBridge() {
   console.log('[ITGMania bridge] server stopped')
 }
 
+// ── Firmware flashing (WebFsr Update feature) ───────────────────────────────
+// Actually writing new firmware to the Teensy happens over raw USB HID to
+// its HalfKay bootloader -- a genuinely different, low-level protocol from
+// the WebSerial connection the renderer uses for normal operation. Rather
+// than hand-rolling that byte-level protocol (real risk of getting it
+// subtly wrong), this shells out to PJRC's own official, battle-tested
+// `teensy_loader_cli` -- the same tool the real Arduino IDE/Teensyduino
+// uses under the hood.
+//
+// SETUP REQUIRED: download the prebuilt teensy_loader_cli binary for each
+// platform you ship from PJRC's own repo:
+//   https://github.com/PaulStoffregen/teensy_loader_cli
+// and place them at:
+//   resources/teensy_loader_cli/win32/teensy_loader_cli.exe
+//   resources/teensy_loader_cli/darwin/teensy_loader_cli
+//   resources/teensy_loader_cli/linux/teensy_loader_cli
+// Then add `resources/teensy_loader_cli` to your electron-builder config's
+// `extraResources` so it gets copied into the packaged app (not just work
+// in dev). On macOS/Linux the binary also needs its executable bit set
+// (`chmod +x`) -- do this once when you add the file, git preserves it.
+
+function getTeensyLoaderPath() {
+  const platform = process.platform // 'win32' | 'darwin' | 'linux'
+  const binName = platform === 'win32' ? 'teensy_loader_cli.exe' : 'teensy_loader_cli'
+  // In dev, resources/ sits next to this file's project root. Once
+  // packaged, extraResources land in process.resourcesPath instead.
+  const base = app.isPackaged
+    ? path.join(process.resourcesPath, 'teensy_loader_cli')
+    : path.join(__dirname, '..', 'resources', 'teensy_loader_cli')
+  return path.join(base, platform, binName)
+}
+
+function checkTeensyLoaderAvailable() {
+  const loaderPath = getTeensyLoaderPath()
+  const exists = fs.existsSync(loaderPath)
+  return { available: exists, path: loaderPath, platform: process.platform }
+}
+
+// Flashes a .hex file (received from the renderer as raw bytes, since the
+// renderer already fetched it from the manifest's hexUrl) onto a Teensy.
+// Streams teensy_loader_cli's own stdout/stderr back to the renderer line
+// by line via `firmware:flash-progress` so the UI can show live status --
+// this includes it waiting for the board to appear in bootloader mode, so
+// the customer has time to press the physical button after being prompted.
+function flashFirmware(event, hexBytes) {
+  return new Promise((resolve, reject) => {
+    const loader = checkTeensyLoaderAvailable()
+    if (!loader.available) {
+      reject(new Error(
+        `teensy_loader_cli not found for this platform (expected at ${loader.path}). ` +
+        `See the setup comment above getTeensyLoaderPath() in main.cjs.`
+      ))
+      return
+    }
+
+    let tmpHexPath
+    try {
+      tmpHexPath = path.join(os.tmpdir(), `webfsr-update-${Date.now()}.hex`)
+      fs.writeFileSync(tmpHexPath, Buffer.from(hexBytes))
+    } catch (err) {
+      reject(new Error(`Couldn't write temp firmware file: ${err.message}`))
+      return
+    }
+
+    const cleanup = () => {
+      try { fs.unlinkSync(tmpHexPath) } catch { /* best effort */ }
+    }
+
+    // -w  : wait for the Teensy to appear in bootloader mode (gives the
+    //       customer time to press the button after being prompted, or
+    //       lets an already-triggered board be caught automatically)
+    // -v  : verbose, so we get meaningful progress lines to relay
+    // --mcu=TEENSY40 : must match your actual board. Change this if you
+    //       ever ship on a different Teensy model.
+    const child = spawn(loader.path, ['-w', '-v', '--mcu=TEENSY40', tmpHexPath])
+
+    const sendProgress = (line) => {
+      if (event?.sender && !event.sender.isDestroyed()) {
+        event.sender.send('firmware:flash-progress', line)
+      }
+    }
+
+    child.stdout.on('data', (data) => {
+      String(data).split(/\r?\n/).filter(Boolean).forEach(sendProgress)
+    })
+    child.stderr.on('data', (data) => {
+      String(data).split(/\r?\n/).filter(Boolean).forEach(sendProgress)
+    })
+
+    child.on('error', (err) => {
+      cleanup()
+      reject(new Error(`Failed to launch teensy_loader_cli: ${err.message}`))
+    })
+
+    child.on('close', (code) => {
+      cleanup()
+      if (code === 0) {
+        resolve({ success: true })
+      } else {
+        reject(new Error(`teensy_loader_cli exited with code ${code}`))
+      }
+    })
+  })
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1200,
@@ -156,6 +264,13 @@ ipcMain.on('itgmania-bridge:broadcast', (event, payload) => {
 })
 
 ipcMain.handle('itgmania-bridge:get-port', () => ITGMANIA_BRIDGE_PORT)
+
+// ── IPC: firmware flashing ───────────────────────────────────────────────
+// hexBytes arrives as an ArrayBuffer from the renderer (it already fetched
+// the .hex from the manifest's hexUrl); ipcMain.handle auto-marshals it as
+// a Buffer-compatible Uint8Array on this side.
+ipcMain.handle('firmware:check-loader', () => checkTeensyLoaderAvailable())
+ipcMain.handle('firmware:flash', (event, hexBytes) => flashFirmware(event, hexBytes))
 
 app.whenReady().then(() => {
   createWindow()

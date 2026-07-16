@@ -1,4 +1,4 @@
-import { AlertTriangle, Download, GripVertical, Heart, Moon, Share, Smartphone, Sun, Unplug } from "lucide-react";
+import { AlertTriangle, Download, GripVertical, Heart, Moon, RefreshCw, Share, Smartphone, Sun, Unplug, Upload } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
 	AboutDialog,
@@ -477,6 +477,10 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition }: 
 	};
 
 	(LedSection as unknown as { _handleLine: (l: string) => boolean })._handleLine = handleLedLine;
+	// Lets FirmwareUpdateSection read current LED zones + brightness for
+	// a backup, same reasoning as SensorTuningSection's _getSnapshot above.
+	(LedSection as unknown as { _getSnapshot: () => { sensors: SensorZone[]; brightness: number } })._getSnapshot =
+		() => ({ sensors, brightness });
 
 	const totalLeds = Math.max(16, ...sensors.map(s => s.ledOffset + s.ledCount));
 
@@ -781,7 +785,9 @@ function loadTuning(count: number): SensorTuning[] {
 			];
 		}
 	} catch {}
-	return Array.from({ length: count }, (_, i) => ({ trigger: 700, release: 300, gainX100: 100, buttonGroup: i, releaseDebounceMs: 15 }));
+	return Array.from({ length: count }, (_, i) => ({
+		trigger: 700, release: 300, gainX100: 100, buttonGroup: i, releaseDebounceMs: 15,
+	}));
 }
 function saveTuning(t: SensorTuning[]) {
 	localStorage.setItem(LS_TUNING_KEY, JSON.stringify(t));
@@ -869,18 +875,17 @@ function SensorTuningSection({
 		}
 	}, [numSensors]);
 
-	// Parse "p <sensor> <trigger> <release> <gain> <buttonGroup> <liveValue>"
+	// Parse "p <sensor> <trigger> <release> <gain> <buttonGroup>
+	//        <releaseDebounceMs> <liveValue>"
 	// responses from the firmware so the UI reflects what's actually saved
-	// on the pad.
+	// on the pad. Tolerates older firmware sending fewer fields (a
+	// not-yet-reflashed pad, or extra dev-build-only fields at the end
+	// from a personal/test firmware -- harmless, just ignored here since
+	// the public build doesn't have a UI for them).
 	const handleTuningLine = (line: string) => {
 		if (!line.startsWith("p ")) return false;
 		const nums = line.slice(2).trim().split(/\s+/).map(Number);
 		if (nums.length < 6) return false;
-		// Firmware now sends 7 numeric fields (added release_debounce_ms
-		// before the trailing live value) -- but tolerate the OLDER
-		// 6-field format too (sensor trigger release gain buttonGroup
-		// liveValue), falling back to a sane default debounce of 15ms so
-		// this doesn't break against a not-yet-reflashed pad.
 		const hasDebounceField = nums.length >= 7;
 		const [sensor, trigger, release, gain, buttonGroup, maybeDebounce] = nums;
 		const releaseDebounceMs = hasDebounceField ? maybeDebounce : 15;
@@ -895,6 +900,10 @@ function SensorTuningSection({
 	};
 
 	(SensorTuningSection as unknown as { _handleLine: (l: string) => boolean })._handleLine = handleTuningLine;
+	// Lets FirmwareUpdateSection read the current in-memory tuning state
+	// for a backup, without a serial round-trip -- this dashboard's state
+	// already mirrors the board as long as it's been synced/connected.
+	(SensorTuningSection as unknown as { _getSnapshot: () => SensorTuning[] })._getSnapshot = () => tuning;
 
 	// Query all sensors' tuning on connect
 	const hasQueriedRef = useRef(false);
@@ -1263,6 +1272,442 @@ function SensorTuningSection({
 	);
 }
 
+/*=============================================================================
+ FIRMWARE UPDATE SECTION
+=============================================================================*/
+
+// Everything the update checker needs, resolved from a GitHub Release
+// rather than a separately-hosted manifest file -- one less thing to keep
+// in sync. See parseGitHubRelease() below for exactly what each release
+// needs to contain.
+interface FirmwareManifest {
+	version: string;        // from the release's tag name, e.g. "1.1.0"
+	eepromSchema: string;   // 2-hex-digit marker, e.g. "A8" -- compared
+	                         // against the board's current schema to warn
+	                         // BEFORE flashing if calibration will reset.
+	hexUrl: string;         // direct download URL for the compiled .hex
+	notes?: string;         // release body, shown as the changelog
+}
+
+// Fill this in with your actual GitHub repo.
+const GITHUB_REPO = "yourusername/yourrepo"; // e.g. "PerusalCoding/webfsr"
+
+// Minimal slice of GitHub's Releases API response we actually use.
+// Full shape: https://docs.github.com/en/rest/releases/releases#get-the-latest-release
+interface GitHubRelease {
+	tag_name: string;
+	body: string | null;
+	assets: { name: string; browser_download_url: string }[];
+}
+
+// RELEASE AUTHORING CONVENTION -- follow this each time you cut a release
+// on GitHub, and the dashboard picks everything up automatically with no
+// separate manifest file to maintain:
+//
+//   1. Tag the release with the version (e.g. "v1.1.0" or "1.1.0" --
+//      either works, the leading "v" is stripped automatically).
+//   2. Attach the compiled Fsr_Master_Public.ino.hex as a release asset.
+//      The filename just needs to END in ".hex" -- anything before that
+//      is fine (e.g. "Fsr_Master_Public_v1.1.0.hex").
+//   3. Somewhere in the release description (the "notes"/body field),
+//      include a line exactly like:
+//          EEPROM_SCHEMA: A8
+//      matching kEepromSchema in that release's Fsr_Master_Public.ino.
+//      This is what lets the dashboard warn customers BEFORE flashing if
+//      an update will reset their calibration. If this line is missing,
+//      the dashboard assumes the schema changed (safest default -- it'll
+//      just show the reset warning even if it turns out not to be
+//      necessary, rather than risk silently skipping a real warning).
+//   4. The rest of the release body is shown to customers as-is, so
+//      write it like a real changelog.
+function parseGitHubRelease(release: GitHubRelease): FirmwareManifest | null {
+	const version = release.tag_name.replace(/^v/i, "");
+	const hexAsset = release.assets.find((a) => a.name.toLowerCase().endsWith(".hex"));
+	if (!hexAsset) return null; // no usable firmware attached to this release
+	const schemaMatch = release.body?.match(/EEPROM_SCHEMA:\s*([0-9A-Fa-f]{2})/);
+	return {
+		version,
+		eepromSchema: schemaMatch ? schemaMatch[1].toUpperCase() : "??", // "??" never matches a real schema -> always shows the reset warning, the safe default
+		hexUrl: hexAsset.browser_download_url,
+		notes: release.body ?? undefined,
+	};
+}
+
+// Full snapshot of everything worth backing up before a firmware update:
+// per-sensor tuning (Trigger/Release/Gain/Group/Debounce) plus LED zones
+// and brightness. Saved as a plain JSON file the customer keeps on their
+// own machine -- also doubles as a general "export my settings" feature
+// independent of updates, e.g. for sharing a known-good config or moving
+// to a new PC.
+interface BackupFile {
+	kind: "webfsr-backup";
+	savedAt: string;             // ISO timestamp
+	firmwareVersion: string;     // version running WHEN this backup was taken
+	eepromSchema: string;
+	sensors: SensorTuning[];
+	led: { sensors: SensorZone[]; brightness: number };
+}
+
+interface FirmwareUpdateSectionProps {
+	connected: boolean;
+	sendText: (text: string) => void;
+	connect: () => void;
+	disconnect: () => void;
+}
+
+// Minimal shape of what preload.cjs exposes for firmware flashing. Declared
+// here rather than in a shared .d.ts so this file stays self-contained --
+// move it to a proper global declaration if other components need it too.
+interface WebFsrElectronAPI {
+	checkFirmwareLoaderAvailable: () => Promise<{ available: boolean; path: string; platform: string }>;
+	flashFirmware: (hexBytes: ArrayBuffer) => Promise<{ success: boolean }>;
+	onFirmwareFlashProgress: (callback: (line: string) => void) => () => void;
+}
+declare global {
+	interface Window { electronAPI?: WebFsrElectronAPI; }
+}
+
+function FirmwareUpdateSection({ connected, sendText, connect, disconnect }: FirmwareUpdateSectionProps) {
+	const [currentVersion, setCurrentVersion] = useState<string | null>(null);
+	const [currentSchema, setCurrentSchema] = useState<string | null>(null);
+	const [manifest, setManifest] = useState<FirmwareManifest | null>(null);
+	const [checkError, setCheckError] = useState<string | null>(null);
+	const [checking, setChecking] = useState(false);
+	const [backupDone, setBackupDone] = useState(false);
+	const [lastBackup, setLastBackup] = useState<BackupFile | null>(null);
+	const [restoreStatus, setRestoreStatus] = useState<string | null>(null);
+	const fileInputRef = useRef<HTMLInputElement>(null);
+
+	// Flashing state
+	const [flashing, setFlashing] = useState(false);
+	const [flashLog, setFlashLog] = useState<string[]>([]);
+	const [flashError, setFlashError] = useState<string | null>(null);
+	const [flashSucceeded, setFlashSucceeded] = useState(false);
+	const [awaitingReconnect, setAwaitingReconnect] = useState(false);
+
+	// Parse "i <version> <schema_hex> <num_sensors>" identify responses.
+	const handleIdentifyLine = (line: string) => {
+		if (!line.startsWith("i ")) return false;
+		const parts = line.slice(2).trim().split(/\s+/);
+		if (parts.length < 2) return false;
+		setCurrentVersion(parts[0]);
+		setCurrentSchema(parts[1].toUpperCase());
+		return true;
+	};
+	(FirmwareUpdateSection as unknown as { _handleLine: (l: string) => boolean })._handleLine = handleIdentifyLine;
+
+	// Ask the board to identify itself once connected.
+	useEffect(() => {
+		if (connected) sendText("i\n");
+	}, [connected]);
+
+	// After a successful flash, WebSerial requires a genuine user click to
+	// reconnect (it won't let us call connect() programmatically from an
+	// async callback) -- so we just wait here for `connected` to flip true
+	// again from the user clicking "Reconnect", then auto-replay the
+	// backup taken right before the flash. This is what actually closes
+	// the loop so an update feels like one smooth action instead of two.
+	useEffect(() => {
+		if (connected && awaitingReconnect && lastBackup) {
+			setAwaitingReconnect(false);
+			sendText("i\n"); // refresh version display to confirm the new firmware
+			applyBackup(lastBackup);
+		}
+	}, [connected, awaitingReconnect, lastBackup]);
+
+	const checkForUpdates = async () => {
+		setChecking(true);
+		setCheckError(null);
+		try {
+			// GitHub's REST API sends CORS headers on public GET endpoints,
+			// so this works as a plain fetch straight from the renderer --
+			// no proxy or main-process involvement needed. Unauthenticated
+			// requests are capped at 60/hour per IP, which is comfortably
+			// enough for customers occasionally clicking "Check for
+			// Updates" -- not something to worry about at this scale.
+			const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+				headers: { Accept: "application/vnd.github+json" },
+				cache: "no-store",
+			});
+			if (!res.ok) throw new Error(`GitHub returned ${res.status} -- check GITHUB_REPO is set correctly`);
+			const release = (await res.json()) as GitHubRelease;
+			const data = parseGitHubRelease(release);
+			if (!data) throw new Error("Latest release has no .hex file attached");
+			setManifest(data);
+		} catch (err) {
+			setCheckError(err instanceof Error ? err.message : "Couldn't check for updates");
+		} finally {
+			setChecking(false);
+		}
+	};
+
+	const updateAvailable = manifest && currentVersion && manifest.version !== currentVersion;
+	const schemaWillChange = manifest && currentSchema && manifest.eepromSchema.toUpperCase() !== currentSchema;
+
+	// Gathers a full snapshot from the OTHER sections' live in-memory state
+	// via the _getSnapshot bridge (same pattern as _handleLine above) --
+	// this reflects whatever the dashboard currently has synced from the
+	// board, not a fresh serial round-trip.
+	const gatherBackup = (): BackupFile | null => {
+		const tuningSnapshot = (SensorTuningSection as unknown as { _getSnapshot?: () => SensorTuning[] })._getSnapshot?.();
+		const ledSnapshot = (LedSection as unknown as { _getSnapshot?: () => { sensors: SensorZone[]; brightness: number } })._getSnapshot?.();
+		if (!tuningSnapshot || !ledSnapshot) return null;
+		return {
+			kind: "webfsr-backup",
+			savedAt: new Date().toISOString(),
+			firmwareVersion: currentVersion ?? "unknown",
+			eepromSchema: currentSchema ?? "unknown",
+			sensors: tuningSnapshot,
+			led: ledSnapshot,
+		};
+	};
+
+	const downloadBackup = () => {
+		const backup = gatherBackup();
+		if (!backup) {
+			setRestoreStatus("Couldn't read current settings -- make sure the pad is connected and synced first.");
+			return;
+		}
+		const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = `webfsr-backup-${new Date().toISOString().slice(0, 10)}.json`;
+		a.click();
+		URL.revokeObjectURL(url);
+		setBackupDone(true);
+		setLastBackup(backup); // kept in memory too, so a post-update auto-restore doesn't need the file
+	};
+
+	// Replays a backup back over serial -- shared by the manual "Restore
+	// My Settings" file-picker flow AND the automatic post-update restore.
+	// Small delay between commands so the firmware's serial buffer/EEPROM
+	// writes aren't hammered back-to-back (mirrors the delay pattern
+	// already used elsewhere for applying LED presets).
+	const applyBackup = (backup: BackupFile) => {
+		if (!connected) {
+			setRestoreStatus("Connect to the pad before restoring.");
+			return;
+		}
+		setRestoreStatus("Restoring...");
+		let delay = 0;
+		const step = 60; // ms between commands
+		backup.sensors.forEach((s, i) => {
+			setTimeout(() => sendText(`y ${i} ${s.trigger}\n`), delay += step);
+			setTimeout(() => sendText(`r ${i} ${s.release}\n`), delay += step);
+			setTimeout(() => sendText(`g ${i} ${s.gainX100}\n`), delay += step);
+			setTimeout(() => sendText(`m ${i} ${s.buttonGroup}\n`), delay += step);
+			setTimeout(() => sendText(`d ${i} ${s.releaseDebounceMs}\n`), delay += step);
+		});
+		backup.led.sensors.forEach((s) => {
+			const { r, g, b } = hexToRgb(s.color);
+			setTimeout(() => sendText(`l ${s.sensorIndex} ${r} ${g} ${b}\n`), delay += step);
+			setTimeout(() => sendText(`z ${s.sensorIndex} ${s.ledOffset} ${s.ledCount}\n`), delay += step);
+		});
+		setTimeout(() => sendText(`b ${backup.led.brightness}\n`), delay += step);
+		setTimeout(() => setRestoreStatus(`Restored ${backup.sensors.length} sensor(s) from backup taken ${new Date(backup.savedAt).toLocaleString()}.`), delay += step);
+	};
+
+	const restoreFromFile = (file: File) => {
+		setRestoreStatus("Restoring...");
+		file.text().then((text) => {
+			let backup: BackupFile;
+			try {
+				backup = JSON.parse(text);
+			} catch {
+				setRestoreStatus("That file doesn't look like a valid backup.");
+				return;
+			}
+			if (backup.kind !== "webfsr-backup") {
+				setRestoreStatus("That file doesn't look like a WebFsr backup.");
+				return;
+			}
+			applyBackup(backup);
+		});
+	};
+
+	// The actual one-click update flow. Requires window.electronAPI (i.e.
+	// running inside the Electron app, not a bare browser tab) since
+	// flashing needs Node's child_process to run teensy_loader_cli --
+	// something a web page fundamentally can't do on its own.
+	const updateNow = async () => {
+		if (!manifest) return;
+		setFlashError(null);
+		setFlashLog([]);
+		setFlashSucceeded(false);
+
+		if (!window.electronAPI) {
+			setFlashError("One-click updates only work in the WebFsr desktop app, not a browser tab.");
+			return;
+		}
+
+		const loaderCheck = await window.electronAPI.checkFirmwareLoaderAvailable();
+		if (!loaderCheck.available) {
+			setFlashError(`Firmware loader isn't set up on this install (expected at ${loaderCheck.path}).`);
+			return;
+		}
+
+		setFlashing(true);
+		const unsubscribe = window.electronAPI.onFirmwareFlashProgress((line) => {
+			setFlashLog((prev) => [...prev, line]);
+		});
+
+		try {
+			setFlashLog((prev) => [...prev, `Downloading firmware v${manifest.version}...`]);
+			const res = await fetch(manifest.hexUrl);
+			if (!res.ok) throw new Error(`Couldn't download firmware (server returned ${res.status})`);
+			const hexBytes = await res.arrayBuffer();
+
+			// Release the WebSerial connection so the OS/USB stack is free
+			// for teensy_loader_cli to find the board once it reboots into
+			// its bootloader.
+			await disconnect();
+
+			setFlashLog((prev) => [...prev, "Press and release the button on your Teensy now to enter update mode..."]);
+			await window.electronAPI.flashFirmware(hexBytes);
+
+			setFlashSucceeded(true);
+			setAwaitingReconnect(true);
+		} catch (err) {
+			setFlashError(err instanceof Error ? err.message : "Update failed");
+		} finally {
+			unsubscribe();
+			setFlashing(false);
+		}
+	};
+
+	return (
+		<div className="flex flex-col gap-3 p-3 rounded-lg border border-border bg-card">
+			<div className="flex items-center justify-between">
+				<h3 className="text-sm font-semibold">Firmware Update</h3>
+				{currentVersion && (
+					<span className="text-[11px] font-mono text-muted-foreground">
+						Running v{currentVersion}{currentSchema ? ` (schema ${currentSchema})` : ""}
+					</span>
+				)}
+			</div>
+
+			{!connected && (
+				<p className="text-[11px] text-muted-foreground">Connect to your pad to check its firmware version.</p>
+			)}
+
+			<Button variant="outline" size="sm" onClick={checkForUpdates} disabled={checking} className="gap-1.5 self-start">
+				<RefreshCw className={`w-3.5 h-3.5 ${checking ? "animate-spin" : ""}`} />
+				{checking ? "Checking..." : "Check for Updates"}
+			</Button>
+
+			{checkError && <p className="text-[11px] text-destructive">{checkError}</p>}
+
+			{manifest && !updateAvailable && (
+				<p className="text-[11px] text-muted-foreground">You're on the latest version (v{manifest.version}).</p>
+			)}
+
+			{manifest && updateAvailable && (
+				<div className="flex flex-col gap-2 p-2.5 rounded border border-border bg-muted/20">
+					<p className="text-[12px] font-medium">
+						Update available: v{currentVersion ?? "?"} -&gt; v{manifest.version}
+					</p>
+					{manifest.notes && (
+						<p className="text-[11px] text-muted-foreground whitespace-pre-wrap max-h-24 overflow-y-auto">
+							{manifest.notes}
+						</p>
+					)}
+
+					{schemaWillChange && (
+						<div className="flex gap-2 p-2 rounded border border-amber-500/40 bg-amber-500/10">
+							<AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
+							<p className="text-[11px] text-amber-700 dark:text-amber-400">
+								<strong>This update will reset your sensor calibration</strong> (Trigger,
+								Release, Gain, Button Group, Release Debounce, LED colors/zones) back to
+								defaults. Back up your settings below first -- Update Now stays disabled
+								until you do, and restoring afterward happens automatically.
+							</p>
+						</div>
+					)}
+
+					<div className="flex gap-2 flex-wrap">
+						<Button variant="outline" size="sm" onClick={downloadBackup} className="gap-1.5">
+							<Download className="w-3.5 h-3.5" />
+							{backupDone ? "Backup Saved ✓" : "Back Up My Settings"}
+						</Button>
+						<Button
+							size="sm"
+							onClick={updateNow}
+							disabled={!backupDone || flashing || !connected}
+							className="gap-1.5"
+						>
+							<RefreshCw className={`w-3.5 h-3.5 ${flashing ? "animate-spin" : ""}`} />
+							{flashing ? "Updating..." : "Update Now"}
+						</Button>
+						<Button variant="outline" size="sm" asChild className="gap-1.5">
+							<a href={manifest.hexUrl} download>
+								<Download className="w-3.5 h-3.5" />
+								Download .hex manually
+							</a>
+						</Button>
+					</div>
+
+					{!backupDone && (
+						<p className="text-[10px] text-muted-foreground">
+							Back up your settings first -- Update Now unlocks once you have.
+						</p>
+					)}
+
+					{(flashing || flashLog.length > 0) && (
+						<div className="flex flex-col gap-1 p-2 rounded border border-border bg-background/60 max-h-32 overflow-y-auto">
+							{flashLog.map((line, idx) => (
+								<span key={idx} className="text-[10px] font-mono text-muted-foreground">{line}</span>
+							))}
+						</div>
+					)}
+
+					{flashError && (
+						<div className="flex gap-2 p-2 rounded border border-destructive/40 bg-destructive/10">
+							<AlertTriangle className="w-4 h-4 shrink-0 text-destructive" />
+							<p className="text-[11px] text-destructive">{flashError}</p>
+						</div>
+					)}
+
+					{flashSucceeded && awaitingReconnect && (
+						<div className="flex items-center gap-2 p-2 rounded border border-emerald-500/40 bg-emerald-500/10">
+							<p className="text-[11px] text-emerald-700 dark:text-emerald-400 flex-1">
+								Flash complete! Reconnect to your pad to auto-restore your settings.
+							</p>
+							<Button variant="outline" size="sm" onClick={connect} className="gap-1.5 shrink-0">
+								Reconnect
+							</Button>
+						</div>
+					)}
+
+					<p className="text-[10px] text-muted-foreground">
+						Update Now requires the WebFsr desktop app (not a browser tab) and will ask you
+						to press the button on your Teensy once the update starts.
+					</p>
+				</div>
+			)}
+
+			<div className="flex items-center gap-2 pt-1 border-t border-border/60">
+				<Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} className="gap-1.5">
+					<Upload className="w-3.5 h-3.5" />
+					Restore My Settings
+				</Button>
+				<input
+					ref={fileInputRef}
+					type="file"
+					accept="application/json"
+					className="hidden"
+					onChange={(e) => {
+						const file = e.target.files?.[0];
+						if (file) restoreFromFile(file);
+						e.target.value = "";
+					}}
+				/>
+			</div>
+			{restoreStatus && <p className="text-[11px] text-muted-foreground">{restoreStatus}</p>}
+		</div>
+	);
+}
+
 const Dashboard = () => {
 	const colorSettings = useColorSettings();
 	const barSettings = useBarVisualizationSettings();
@@ -1340,6 +1785,8 @@ const Dashboard = () => {
 			if (ledHandler?.(line)) return;
 			const tuningHandler = (SensorTuningSection as unknown as { _handleLine?: (l: string) => boolean })._handleLine;
 			if (tuningHandler?.(line)) return;
+			const updateHandler = (FirmwareUpdateSection as unknown as { _handleLine?: (l: string) => boolean })._handleLine;
+			if (updateHandler?.(line)) return;
 		},
 	);
 
@@ -2032,6 +2479,9 @@ const Dashboard = () => {
 								displayOrder={effectiveDisplayOrder}
 								moveDisplayPosition={moveDisplayPosition}
 							/>
+
+							{/* ── FIRMWARE UPDATE SECTION ── */}
+							<FirmwareUpdateSection connected={connected} sendText={sendTextStable} connect={connect} disconnect={disconnect} />
 
 							<ProfilesSection
 								profiles={profiles}
