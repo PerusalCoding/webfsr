@@ -2635,7 +2635,12 @@ const Dashboard = () => {
 								</Button>
 							</div>
 
-							<div className={`flex gap-2 shrink-0 h-100 ${advancedTuningEnabled ? "min-h-[420px]" : ""}`}>
+							{/* min-h-[420px] is now ALWAYS applied, not just when Advanced
+						    Tuning is on -- see the matching comment in the personal/
+						    dev build for the full reasoning (toggling used to resize
+						    this container, which is very likely what SensorBar's own
+						    internal sizing was mismeasuring on that transition). */}
+						<div className="flex gap-2 shrink-0 h-100 min-h-[420px]">
 								<div className="px-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm grow">
 									{advancedTuningEnabled && (
 										<p className="text-[11px] text-amber-500 px-1 pt-2">
