@@ -1,5 +1,5 @@
 import { AlertTriangle, Download, GripVertical, Heart, Moon, RefreshCw, Share, Smartphone, Sun, Unplug, Upload } from "lucide-react";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
 	AboutDialog,
 	GeneralSettingsSection,
@@ -405,7 +405,14 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition }: 
 
 	const removeSensor = (i: number) => {
 		if (sensors.length <= 1) return;
-		const updated = sensors.filter((_, idx) => idx !== i).map((s, idx) => ({ ...s, sensorIndex: idx }));
+		// IMPORTANT: do NOT reassign sensorIndex here -- see the matching
+		// comment in the personal/dev build for the full explanation. In
+		// short, sensorIndex is an independently editable field (which
+		// physical firmware sensor slot this LED zone responds to), not
+		// an array-position mirror. Renumbering it on every removal used
+		// to silently reassign a customer's real, working sensor to the
+		// wrong slot.
+		const updated = sensors.filter((_, idx) => idx !== i);
 		setSensors(updated);
 		saveSensors(updated);
 		// Tell firmware the new count first (it turns off LEDs for removed
@@ -748,6 +755,20 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition }: 
 // giving a wide, independently adjustable ON/OFF gap per sensor, plus a
 // gain multiplier for weaker FSR variants (e.g. UX FSR 406).
 
+// Bridge shape returned by SensorTuningSection's _getControls() (see the
+// static-property pattern used throughout this file for cross-component
+// access without a full state-lift). Powers the compact Gain/Release
+// Debounce/Button Group controls rendered inline under each sensor's wave
+// in the main view.
+interface SensorTuningControls {
+	tuning: SensorTuning[];
+	effectiveCount: number;
+	sensorLabels: string[];
+	commitGain: (i: number, val: number) => void;
+	commitButtonGroup: (i: number, group: number) => void;
+	commitReleaseDebounce: (i: number, ms: number) => void;
+}
+
 interface SensorTuning {
 	trigger: number;          // 0-1023, ON threshold
 	release: number;          // 0-1023, OFF threshold (must be < trigger)
@@ -764,6 +785,28 @@ interface SensorTuning {
 }
 
 const LS_TUNING_KEY = "webfsr_sensor_tuning_v3";
+
+// ── Tuning external store ───────────────────────────────────────────────
+// See the matching comment in the personal/dev dashboard build for the
+// full rationale -- in short, SensorMiniControls sits inside the
+// sensor-bar grid, which re-renders on every incoming sensor reading.
+// Pulling tuning via a plain function call on every one of those was the
+// actual cause of reported lag. SensorTuningSection publishes a new
+// snapshot only when `tuning` actually changes; SensorMiniControls
+// subscribes via useSyncExternalStore, decoupled from the tick rate.
+let tuningStoreSnapshot: SensorTuning[] = [];
+const tuningStoreListeners = new Set<() => void>();
+function publishTuningStore(next: SensorTuning[]) {
+	tuningStoreSnapshot = next;
+	tuningStoreListeners.forEach((l) => l());
+}
+function subscribeTuningStore(callback: () => void) {
+	tuningStoreListeners.add(callback);
+	return () => tuningStoreListeners.delete(callback);
+}
+function getTuningStoreSnapshot() {
+	return tuningStoreSnapshot;
+}
 
 function loadTuning(count: number): SensorTuning[] {
 	try {
@@ -852,6 +895,11 @@ function SensorTuningSection({
 		onTuningValuesChange?.(tuning.map((t) => t.trigger), tuning.map((t) => t.release));
 	}, [tuning, onTuningValuesChange]);
 
+	// Publish to the external store consumed by SensorMiniControls.
+	useEffect(() => {
+		publishTuningStore(tuning);
+	}, [tuning]);
+
 	// Grow/shrink tuning array if sensor count changes.
 	//
 	// IMPORTANT: only do this when numSensors is a TRUSTWORTHY real count
@@ -904,6 +952,18 @@ function SensorTuningSection({
 	// for a backup, without a serial round-trip -- this dashboard's state
 	// already mirrors the board as long as it's been synced/connected.
 	(SensorTuningSection as unknown as { _getSnapshot: () => SensorTuning[] })._getSnapshot = () => tuning;
+	// Lets the main sensor-bar grid render Gain/Release Debounce/Button
+	// Group as compact inline controls directly under each sensor's wave,
+	// while this component keeps owning the actual `tuning` state, EEPROM
+	// sync-on-connect, and serial parsing.
+	(SensorTuningSection as unknown as { _getControls: () => SensorTuningControls })._getControls = () => ({
+		tuning,
+		effectiveCount,
+		sensorLabels,
+		commitGain,
+		commitButtonGroup,
+		commitReleaseDebounce,
+	});
 
 	// Query all sensors' tuning on connect
 	const hasQueriedRef = useRef(false);
@@ -1126,114 +1186,11 @@ function SensorTuningSection({
 											</p>
 										)}
 
-										{/* Gain */}
-										<div className="flex flex-col gap-1">
-											<div className="flex items-center justify-between">
-												<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
-													Gain
-												</label>
-												<div className="flex items-center gap-1">
-													<input
-														type="number" min={10} max={500} value={t.gainX100}
-														className="w-12 text-xs font-mono text-muted-foreground bg-transparent border border-border rounded px-1 py-0.5 text-right focus:outline-none focus:ring-1 focus:ring-ring"
-														onChange={(e) => {
-															const v = Math.max(10, Math.min(500, Number(e.target.value) || 100));
-															updateTuning(i, { gainX100: v });
-														}}
-														onBlur={(e) => commitGain(i, Math.max(10, Math.min(500, Number(e.target.value) || 100)))}
-													/>
-													<span className="text-[10px] text-muted-foreground">({(t.gainX100 / 100).toFixed(2)}x)</span>
-												</div>
-											</div>
-											<input
-												type="range" min={10} max={500} step={5} value={t.gainX100}
-												className="w-full h-1.5 accent-foreground cursor-pointer"
-												onChange={(e) => updateTuning(i, { gainX100: Number(e.target.value) })}
-												onMouseUp={(e) => commitGain(i, Number((e.target as HTMLInputElement).value))}
-												onTouchEnd={(e) => commitGain(i, Number((e.target as HTMLInputElement).value))}
-											/>
-											<p className="text-[10px] text-muted-foreground">
-												Boosts weak FSR signals (e.g. UX FSR 406) before threshold comparison. 1.00x = no change.
-											</p>
-										</div>
-
-										{/* Release Debounce -- requires the sensor to read continuously
-										    below Release for this long before actually releasing.
-										    Protects long holds from being cut short by brief, real-world
-										    pressure noise (e.g. resting foot weight shifting on a metal
-										    pad panel as it flexes). 0 = instant release, no debounce. */}
-										<div className="flex flex-col gap-1">
-											<div className="flex items-center justify-between">
-												<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
-													Release Debounce
-												</label>
-												<input
-													type="number" min={0} max={100} value={t.releaseDebounceMs}
-													className="w-14 text-xs font-mono text-muted-foreground bg-transparent border border-border rounded px-1 py-0.5 text-right focus:outline-none focus:ring-1 focus:ring-ring"
-													onChange={(e) => {
-														const v = Math.max(0, Math.min(100, Number(e.target.value) || 0));
-														updateTuning(i, { releaseDebounceMs: v });
-													}}
-													onBlur={(e) => commitReleaseDebounce(i, Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
-												/>
-											</div>
-											<input
-												type="range" min={0} max={100} step={1} value={t.releaseDebounceMs}
-												className="w-full h-1.5 accent-foreground cursor-pointer"
-												onChange={(e) => updateTuning(i, { releaseDebounceMs: Number(e.target.value) })}
-												onMouseUp={(e) => commitReleaseDebounce(i, Number((e.target as HTMLInputElement).value))}
-												onTouchEnd={(e) => commitReleaseDebounce(i, Number((e.target as HTMLInputElement).value))}
-											/>
-											<p className="text-[10px] text-muted-foreground">
-												Helps prevent missed holds from resting pressure noise on metal
-												panels. Default 15ms. Raise slightly (20-30ms) if you still get
-												held-misses with resting weight on a panel; keep low for fast
-												stream sections where instant release matters more.
-											</p>
-										</div>
-
-										{/* Button Group -- shares a single joystick button across multiple
-										    sensors mapped to the same panel (e.g. two FSRs both on "Down")
-										    so ITGMania sees ONE input instead of two separate buttons. */}
-										<div className="flex flex-col gap-1">
-											<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
-												Button Group
-											</label>
-											{/*
-											  NOTE: native <option> elements ignore Tailwind's bg-transparent /
-											  dark: utility classes in most browsers -- they're rendered by the
-											  OS's own dropdown widget, not the page's CSS box model. Explicit
-											  inline styles on both <select> and <option> are needed so the
-											  dropdown list doesn't show a stark white background that clashes
-											  with the rest of the dark-themed panel.
-											*/}
-											<select
-												value={t.buttonGroup}
-												onChange={(e) => commitButtonGroup(i, Number(e.target.value))}
-												className="text-xs bg-white dark:bg-neutral-900 border border-border rounded px-2 py-1 w-full focus:outline-none focus:ring-1 focus:ring-ring"
-											>
-												<option value={i} className="bg-white dark:bg-neutral-900" style={{ backgroundColor: "inherit" }}>
-													No sharing (own button)
-												</option>
-												{Array.from({ length: effectiveCount }, (_, j) => j)
-													.filter((j) => j !== i)
-													.map((j) => (
-														<option key={j} value={j} className="bg-white dark:bg-neutral-900" style={{ backgroundColor: "inherit" }}>
-															Share with {sensorLabels[j] || `Sensor ${j + 1}`} (#{j})
-														</option>
-													))}
-											</select>
-											{t.buttonGroup !== i && (
-												<p className="text-[10px] text-amber-500">
-													⚠ This sensor sends the same button as #{t.buttonGroup}. Pressing
-													either one (or both) registers as a single input to ITGMania.
-												</p>
-											)}
-											<p className="text-[10px] text-muted-foreground">
-												Use this when 2 FSRs are wired to the same panel (e.g. two "Down"
-												sensors) so they act as one button instead of two.
-											</p>
-										</div>
+										{/* Gain, Release Debounce, and Button Group now live as compact
+										    inline controls directly under each sensor's wave in the main
+										    view (see the sensor bar grid render) -- kept out of this panel
+										    so the most frequently-tweaked controls don't require opening
+										    Sensor Tuning and expanding a card just to nudge one value. */}
 
 										{/* Quick presets */}
 										<div className="flex flex-wrap gap-1 mt-1">
@@ -1707,6 +1664,82 @@ function FirmwareUpdateSection({ connected, sendText, connect, disconnect }: Fir
 		</div>
 	);
 }
+
+/*=============================================================================
+ SENSOR MINI CONTROLS -- Gain / Release Debounce / Button Group, rendered
+ directly under each sensor's wave in the main view.
+
+ PERFORMANCE: sits inside the sensor-bar grid, which re-renders on every
+ incoming sensor reading. React.memo skips re-rendering this component on
+ those ordinary ticks (since `index` never changes for a given position);
+ useSyncExternalStore gives it an independent subscription to tuning data
+ that only fires when tuning actually changes (published by
+ SensorTuningSection), so the sliders stay live and correct despite memo
+ blocking the parent-driven re-renders.
+=============================================================================*/
+const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: number }) {
+	const tuning = useSyncExternalStore(subscribeTuningStore, getTuningStoreSnapshot);
+	const controls = (SensorTuningSection as unknown as { _getControls?: () => SensorTuningControls })._getControls?.();
+	if (!controls) return null;
+	const { effectiveCount, sensorLabels, commitGain, commitButtonGroup, commitReleaseDebounce } = controls;
+	const t = tuning[index];
+	if (!t) return null;
+
+	return (
+		<div className="flex flex-col gap-1.5 px-2 py-1.5 rounded border border-border/60 bg-muted/10 text-[10px]">
+			{/* Label+value share a line ABOVE the slider (not beside it) so
+			    the slider always gets the full column width -- with 8
+			    narrow columns, label+slider+value on one line didn't
+			    reliably fit. */}
+			<div className="flex flex-col gap-0.5">
+				<div className="flex items-center justify-between">
+					<span className="text-muted-foreground">Gain</span>
+					<span className="font-mono text-muted-foreground">{(t.gainX100 / 100).toFixed(2)}x</span>
+				</div>
+				<input
+					type="range" min={10} max={500} step={5} value={t.gainX100}
+					className="w-full h-1 accent-foreground cursor-pointer"
+					onChange={(e) => commitGain(index, Number(e.target.value))}
+				/>
+			</div>
+
+			{/* Release Debounce */}
+			<div className="flex flex-col gap-0.5">
+				<div className="flex items-center justify-between">
+					<span className="text-muted-foreground" title="Release Debounce (ms)">Debounce</span>
+					<span className="font-mono text-muted-foreground">{t.releaseDebounceMs}ms</span>
+				</div>
+				<input
+					type="range" min={0} max={100} step={1} value={t.releaseDebounceMs}
+					className="w-full h-1 accent-foreground cursor-pointer"
+					onChange={(e) => commitReleaseDebounce(index, Number(e.target.value))}
+				/>
+			</div>
+
+			{/* Button Group */}
+			<div className="flex flex-col gap-0.5">
+				<span className="text-muted-foreground">Group</span>
+				<select
+					value={t.buttonGroup}
+					onChange={(e) => commitButtonGroup(index, Number(e.target.value))}
+					className="w-full text-[10px] bg-white dark:bg-neutral-900 border border-border rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring"
+				>
+					<option value={index} className="bg-white dark:bg-neutral-900">Own button</option>
+					{Array.from({ length: effectiveCount }, (_, j) => j)
+						.filter((j) => j !== index)
+						.map((j) => (
+							<option key={j} value={j} className="bg-white dark:bg-neutral-900">
+								Share w/ {sensorLabels[j] || `Sensor ${j + 1}`}
+							</option>
+						))}
+				</select>
+			</div>
+			{t.buttonGroup !== index && (
+				<p className="text-amber-500">⚠ shares button with #{t.buttonGroup}</p>
+			)}
+		</div>
+	);
+});
 
 const Dashboard = () => {
 	const colorSettings = useColorSettings();
@@ -2303,12 +2336,16 @@ const Dashboard = () => {
 
 	const sensorBarsDrag = useRowDragReorder(moveDisplayPosition);
 
+	// Sensor bar + its mini-controls live in the SAME per-sensor column
+	// again -- see the matching comment in the personal/dev build for
+	// why (two separate grids had no guarantee of matching column
+	// widths, which is what broke reordering sync).
 	const sensorBars = Array.from({ length: numSensors }, (_, position) => {
 		const index = effectiveDisplayOrder[position] ?? position;
 		return (
 			<div
 				key={`sensor-pos-${position}`}
-				className={`relative h-full transition-opacity ${sensorBarsDrag.draggingPos === position ? "opacity-40" : ""} ${sensorBarsDrag.dragOverPos === position ? "ring-2 ring-primary rounded" : ""}`}
+				className={`relative h-full flex flex-col transition-opacity ${sensorBarsDrag.draggingPos === position ? "opacity-40" : ""} ${sensorBarsDrag.dragOverPos === position ? "ring-2 ring-primary rounded" : ""}`}
 				onDragOver={sensorBarsDrag.handleDragOver(position)}
 				onDrop={sensorBarsDrag.handleDrop(position)}
 			>
@@ -2318,30 +2355,37 @@ const Dashboard = () => {
 						onDragEnd={sensorBarsDrag.handleDragEnd}
 					/>
 				</div>
-				<SensorBar
-					key={`sensor-${index}`}
-					value={latestData?.values[index] || 0}
-					index={index}
-					threshold={advancedTuningEnabled ? (liveTriggerValues[index] ?? thresholds[index] ?? 512) : (thresholds[index] || 512)}
-					onThresholdChange={handleThresholdChange}
-					label={sensorLabels[index] || `Sensor ${index + 1}`}
-					color={
-						barSettings.useSingleColor
-							? colorSettings.singleBarColor
-							: colorSettings.sensorColors[index % colorSettings.sensorColors.length] || "#ff0000"
-					}
-					showThresholdText={barSettings.showBarThresholdText}
-					showValueText={barSettings.showBarValueText}
-					thresholdColor={colorSettings.thresholdColor}
-					useThresholdColor={barSettings.useThresholdColor}
-					useGradient={barSettings.useBarGradient}
-					isLocked={generalSettings.lockThresholds}
-					theme={resolvedTheme}
-					secondaryThreshold={advancedTuningEnabled ? liveReleaseValues[index] : undefined}
-					secondaryThresholdLabel="Release"
-					secondaryThresholdColor="rgba(34, 197, 94, 0.9)"
-					onSecondaryThresholdChange={advancedTuningEnabled ? handleSecondaryThresholdChange : undefined}
-				/>
+				<div className="relative flex-1 min-h-0">
+					<SensorBar
+						key={`sensor-${index}`}
+						value={latestData?.values[index] || 0}
+						index={index}
+						threshold={advancedTuningEnabled ? (liveTriggerValues[index] ?? thresholds[index] ?? 512) : (thresholds[index] || 512)}
+						onThresholdChange={handleThresholdChange}
+						label={sensorLabels[index] || `Sensor ${index + 1}`}
+						color={
+							barSettings.useSingleColor
+								? colorSettings.singleBarColor
+								: colorSettings.sensorColors[index % colorSettings.sensorColors.length] || "#ff0000"
+						}
+						showThresholdText={barSettings.showBarThresholdText}
+						showValueText={barSettings.showBarValueText}
+						thresholdColor={colorSettings.thresholdColor}
+						useThresholdColor={barSettings.useThresholdColor}
+						useGradient={barSettings.useBarGradient}
+						isLocked={generalSettings.lockThresholds}
+						theme={resolvedTheme}
+						secondaryThreshold={advancedTuningEnabled ? liveReleaseValues[index] : undefined}
+						secondaryThresholdLabel="Release"
+						secondaryThresholdColor="rgba(34, 197, 94, 0.9)"
+						onSecondaryThresholdChange={advancedTuningEnabled ? handleSecondaryThresholdChange : undefined}
+					/>
+				</div>
+				{advancedTuningEnabled && (
+					<div className="shrink-0 mt-6 pt-2 border-t border-border/40">
+						<SensorMiniControls index={index} />
+					</div>
+				)}
 			</div>
 		);
 	});
@@ -2466,7 +2510,13 @@ const Dashboard = () => {
 								moveDisplayPosition={moveDisplayPosition}
 							/>
 
-							{/* ── SENSOR TUNING SECTION ── */}
+							{/* ── SENSOR TUNING SECTION ──
+							    Kept in the sidebar -- this component is styled for a
+							    narrow column, and the wide main-content area broke its
+							    layout. Gain/Release Debounce/Button Group are pulled OUT
+							    of these cards and live as compact inline controls under
+							    each sensor's wave instead (SensorMiniControls in the main
+							    grid), alongside a simple toggle button up top. */}
 							<SensorTuningSection
 								connected={connected}
 								sendText={sendTextStable}
@@ -2570,7 +2620,22 @@ const Dashboard = () => {
 				<div className="h-full flex flex-col overflow-hidden p-2 relative">
 					{latestData ? (
 						<>
-							<div className="flex gap-2 shrink-0 h-100">
+							{/* ── SENSOR TUNING TOGGLE -- a simple button, not the full
+							    panel (that stays in the sidebar). Flips the same
+							    advancedTuningEnabled flag the sidebar's own toggle
+							    controls. ── */}
+							<div className="shrink-0 mb-2 flex items-center gap-2">
+								<Button
+									variant={advancedTuningEnabled ? "default" : "outline"}
+									size="sm"
+									onClick={toggleAdvancedTuningMode}
+									className="gap-1.5"
+								>
+									Sensor Tuning: {advancedTuningEnabled ? "On" : "Off"}
+								</Button>
+							</div>
+
+							<div className={`flex gap-2 shrink-0 h-100 ${advancedTuningEnabled ? "min-h-[420px]" : ""}`}>
 								<div className="px-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm grow">
 									{advancedTuningEnabled && (
 										<p className="text-[11px] text-amber-500 px-1 pt-2">

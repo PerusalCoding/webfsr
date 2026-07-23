@@ -1,0 +1,342 @@
+
+C:\Users\d_bou\AppData\Local\arduino\sketches\E05D937E9741C9BDD2025FEE2BD155CD/Fsr_Master_Public.ino.elf:     file format elf32-littlearm
+
+SYMBOL TABLE:
+60000000 l    d  .text.headers	00000000 .text.headers
+60001400 l    d  .text.code	00000000 .text.code
+60001abc l    d  .text.progmem	00000000 .text.progmem
+00000000 l    d  .text.itcm	00000000 .text.itcm
+00004e90 l    d  .fini	00000000 .fini
+20000000 l    d  .data	00000000 .data
+200012c0 l    d  .bss	00000000 .bss
+20200000 l    d  .bss.dma	00000000 .bss.dma
+60007dd8 l    d  .text.csf	00000000 .text.csf
+00000000 l    d  .debug_info	00000000 .debug_info
+00000000 l    d  .debug_abbrev	00000000 .debug_abbrev
+00000000 l    d  .debug_line	00000000 .debug_line
+00000000 l    d  .debug_frame	00000000 .debug_frame
+00000000 l    d  .debug_str	00000000 .debug_str
+00000000 l    d  .ARM.attributes	00000000 .ARM.attributes
+00000000 l    d  .comment	00000000 .comment
+00000000 l    d  .debug_loclists	00000000 .debug_loclists
+00000000 l    d  .debug_aranges	00000000 .debug_aranges
+00000000 l    d  .debug_rnglists	00000000 .debug_rnglists
+00000000 l    d  .debug_line_str	00000000 .debug_line_str
+00000000 l    df *ABS*	00000000 bootdata.c
+00000000 l    df *ABS*	00000000 startup.c
+60001400 l     F .text.code	00000012 memory_copy
+60001414 l     F .text.code	0000001c memory_clear.constprop.0
+60001430 l     F .text.code	000001bc ResetHandler2
+00000000 l    df *ABS*	00000000 analog.c
+20002694 l     O .bss	00000001 calibrating
+00000000 l    df *ABS*	00000000 tempmon.c
+200025e8 l     O .bss	00000004 s_hot_ROOM
+200025ec l     O .bss	00000004 s_roomC_hotC
+200025e0 l     O .bss	00000004 s_hotCount
+200025e4 l     O .bss	00000004 s_hotTemp
+00000000 l    df *ABS*	00000000 usb.c
+0000355c l     F .text.itcm	000000b8 endpoint0_receive
+200024b4 l     O .bss	00000004 endpoint0_notify_mask
+00003614 l     F .text.itcm	00000094 schedule_transfer
+000036a8 l     F .text.itcm	00000038 run_callbacks
+000036e0 l     F .text.itcm	000000ac endpoint0_transmit.constprop.0
+20002699 l     O .bss	00000001 sof_usage
+200025a8 l     O .bss	00000008 reply_buffer
+200024b8 l     O .bss	00000004 endpointN_notify_mask
+200026a4 l     O .bss	00000001 usb_reboot_timer
+20001730 l     O .bss	00000008 endpoint0_setupdata
+200024ac l     O .bss	00000008 endpoint0_buffer
+00000000 l    df *ABS*	00000000 crti.o
+00000000 l    df *ABS*	00000000 crtn.o
+00000000 l    df *ABS*	00000000 crtstuff.c
+00000020 l     F .text.itcm	00000000 register_tm_clones
+00000044 l     F .text.itcm	00000000 frame_dummy
+20002590 l     O .bss	00000000 object.0
+60001ab0 l     O .text.code	00000000 __frame_dummy_init_array_entry
+00000000 l    df *ABS*	00000000 Fsr_Master_Public.ino.cpp
+000000a4 l     F .text.itcm	00000164 LoadSensorConfigFromEeprom() [clone .part.0]
+20000418 l     O .data	00000008 kAnalogPins
+00000208 l     F .text.itcm	000000a8 SerialProcessor::PrintSensorTuningFor(int) [clone .isra.0]
+20002691 l     O .bss	00000001 loop::willSend
+00002234 l     F .text.itcm	000000c8 _GLOBAL__sub_I__Z11ButtonStartv
+00000000 l    df *ABS*	00000000 FastLED.cpp
+2000231c l     O .bss	00000004 lastshow
+2000236c l     O .bss	00000004 CFastLED::countFPS(int)::br
+20002370 l     O .bss	00000004 CFastLED::countFPS(int)::lastframe
+000026bc l     F .text.itcm	00000018 _GLOBAL__sub_I_pSmartMatrix
+00000000 l    df *ABS*	00000000 usb_desc.c
+20000c94 l     O .data	00000012 device_descriptor
+60001c78 l     O .text.progmem	0000000a qualifier_descriptor
+20000d04 l     O .data	0000003f keyboard_report_desc
+20000d70 l     O .data	00000054 mouse_report_desc
+20000ca8 l     O .data	00000055 joystick_report_desc
+20000d44 l     O .data	00000028 keymedia_report_desc
+00000000 l    df *ABS*	00000000 EventResponder.cpp
+00000000 l    df *ABS*	00000000 Print.cpp
+0000273c l     F .text.itcm	00000074 Print::printNumber(unsigned long, unsigned char, unsigned char) [clone .part.0]
+00000000 l    df *ABS*	00000000 Stream.cpp
+00000000 l    df *ABS*	00000000 clockspeed.c
+00000000 l    df *ABS*	00000000 delay.c
+00000000 l    df *ABS*	00000000 digital.c
+00000000 l    df *ABS*	00000000 eeprom.c
+00002db8 l     F .text.itcm	00000060 flash_wait
+20002695 l     O .bss	00000001 initialized
+200025f4 l     O .bss	0000001e sector_index
+00000000 l    df *ABS*	00000000 main.cpp
+00000000 l    df *ABS*	00000000 memcpy-armv7m.S.o
+00000000 l    df *ABS*	00000000 nonstd.c
+00000000 l    df *ABS*	00000000 usb_inst.cpp
+00000000 l    df *ABS*	00000000 usb_joystick.c
+20001420 l     O .bss	00000080 tx_transfer
+2000269c l     O .bss	00000001 tx_head
+2000269a l     O .bss	00000001 transmit_previous_timeout
+202000c0 l     O .bss.dma	00000080 txbuffer
+00000000 l    df *ABS*	00000000 usb_keyboard.c
+200014a0 l     O .bss	00000180 tx_transfer
+2000269d l     O .bss	00000001 tx_head
+00000000 l    df *ABS*	00000000 usb_mouse.c
+20001620 l     O .bss	00000080 tx_transfer
+2000269e l     O .bss	00000001 tx_head
+00000000 l    df *ABS*	00000000 usb_serial.c
+00004108 l     F .text.itcm	00000068 rx_queue_transfer
+20001320 l     O .bss	00000100 rx_transfer
+20200140 l     O .bss.dma	00001000 rx_buffer
+20002688 l     O .bss	00000002 rx_packet_size
+00004170 l     F .text.itcm	000000bc rx_event
+20002697 l     O .bss	00000001 rx_head
+20002698 l     O .bss	00000001 rx_tail
+200025b4 l     O .bss	00000010 rx_count
+200025c4 l     O .bss	00000010 rx_index
+200025b0 l     O .bss	00000004 rx_available
+200025d4 l     O .bss	00000009 rx_list
+0000422c l     F .text.itcm	000000a4 usb_serial_flush_callback
+200026a0 l     O .bss	00000001 tx_noautoflush
+2000268a l     O .bss	00000002 tx_available
+2000269f l     O .bss	00000001 tx_head
+200016a0 l     O .bss	00000080 tx_transfer
+20201140 l     O .bss.dma	00002000 txbuffer
+000042d0 l     F .text.itcm	000001b4 usb_serial_write.part.0
+2000269b l     O .bss	00000001 transmit_previous_timeout
+2000268c l     O .bss	00000002 tx_packet_size
+00000000 l    df *ABS*	00000000 yield.cpp
+20002692 l     O .bss	00000001 yield::running
+00000000 l    df *ABS*	00000000 pwm.c
+00000000 l    df *ABS*	00000000 rtc.c
+00000000 l    df *ABS*	00000000 strtol.c
+00004ad8 l     F .text.itcm	00000144 _strtol_l.isra.0
+00000000 l    df *ABS*	00000000 strtoul.c
+00004c3c l     F .text.itcm	00000138 _strtoul_l.isra.0
+00000000 l    df *ABS*	00000000 memset.c
+00000000 l    df *ABS*	00000000 errno.c
+00000000 l    df *ABS*	00000000 init.c
+00000000 l    df *ABS*	00000000 ctype_.c
+00000000 l    df *ABS*	00000000 impure.c
+00000000 l    df *ABS*	00000000 HardwareSerial.cpp
+00000000 l    df *ABS*	00000000 findfp.c
+60001a78 l     F .text.code	00000008 __set_arm_clock_veneer
+60001a80 l     F .text.code	00000008 __usb_init_serialnumber_veneer
+60001a88 l     F .text.code	00000008 __delay_veneer
+60001a90 l     F .text.code	00000008 __memset_veneer
+60001a98 l     F .text.code	00000008 __pwm_init_veneer
+60001aa0 l     F .text.code	00000008 ____libc_init_array_veneer
+60001aa8 l     F .text.code	00000008 __main_veneer
+00004e78 l     F .text.itcm	00000008 ___reboot_Teensyduino__veneer
+00004e80 l     F .text.itcm	00000008 ___init_veneer
+000046a8 g     F .text.itcm	0000001c usb_serial_available
+6000166c g     F .text.code	00000002 startup_default_late_hook
+00004874  w    F .text.itcm	000000d8 yield
+20002684 g     O .bss	00000004 usb_timer1_callback
+60001afc g     O .text.progmem	00000018 usb_string_manufacturer_name_default
+000040a8 g     F .text.itcm	00000038 usb_keyboard_configure
+00001cb4  w    F .text.itcm	000000bc ClocklessController<6, 250, 625, 375, (EOrder)66, 0, false, 50>::showPixels(PixelController<(EOrder)66, 1, 4294967295ul>&)
+00002090  w    F .text.itcm	000001a4 CLEDController::clearLeds(int)
+20002690 g     O .bss	00000001 HardwareSerialIMXRT::s_count_serials_with_serial_events
+60001614 g     F .text.code	00000050 analog_init
+00002e18 g     F .text.itcm	00000048 eeprom_initialize
+20000c7c g     O .data	00000004 F_CPU_ACTUAL
+200005dc  w    O .data	00000030 vtable for WS2812B<(unsigned char)6, (EOrder)66>
+20000dda g     O .data	00000001 curButtonNum
+00004e94 g       .data	00000000 __exidx_end
+2000268e g     O .bss	00000001 EventResponder::runningFromYield
+000034fc g     F .text.itcm	00000060 tempmonGetTemp
+00004e1c g     F .text.itcm	0000000c __errno
+60001000 g     O .text.headers	00000020 ImageVectorTable
+20002330 g     O .bss	00000004 EventResponder::firstInterrupt
+00003f0c g     F .text.itcm	00000004 usb_transfer_status
+200012c0 g     O .bss	0000001c HardwareSerialIMXRT::s_serials_with_serial_events
+00003f80  w    F .text.itcm	00000008 usb_serial_class::write(unsigned char const*, unsigned int)
+20000710 g     O .data	00000280 digital_pin_to_info_PGM
+00004e90 g       .text.itcm	00000000 _etext
+200012c0 g       .bss	00000000 _sbss
+00000068  w    F .text.itcm	00000004 CLEDController::size()
+00000070  w    F .text.itcm	00000004 CLEDController::endShowLeds(void*)
+20000d6c g     O .data	00000004 loopTime
+60001c84 g       *ABS*	00000000 _stextload
+00001588 g     F .text.itcm	000003c8 loop
+0000494c g     F .text.itcm	00000074 flexpwm_init
+00002ee8 g     F .text.itcm	000000e4 eepromemu_flash_write
+60001670 g     F .text.code	00000004 startup_debug_reset
+00003dc0 g     F .text.itcm	00000064 usb_config_rx
+00002680 g     F .text.itcm	0000003c CFastLED::clear(bool)
+00001950  w    F .text.itcm	00000362 ClocklessController<6, 250, 625, 375, (EOrder)66, 0, false, 50>::showRGBInternal(PixelController<(EOrder)66, 1, 4294967295ul>)
+2000232c g     O .bss	00000004 EventResponder::lastInterrupt
+000031d4 g     F .text.itcm	00000134 memcpy
+00002360 g     F .text.itcm	00000194 CFastLED::show(unsigned char)
+200012c0 g     O .data	00000000 .hidden __TMC_END__
+200024bc g     O .bss	00000008 kButtonGroupJoystickNum
+20002660 g     O .bss	00000004 systick_millis_count
+200026a2 g     O .bss	00000001 usb_configuration
+60000000 g     O .text.headers	00000200 FlexSPI_NOR_Config
+60001afc  w    O .text.progmem	00000018 usb_string_manufacturer_name
+20001738 g     O .bss	00000be0 kSensors
+6000192c g     F .text.code	000000e8 usb_init
+000040e0 g     F .text.itcm	00000028 usb_mouse_configure
+20002664 g     O .bss	00000004 systick_safe_read
+aaaaaaab g       *ABS*	00000000 _flexram_bank_config
+00004d74 g     F .text.itcm	00000020 strtoul
+00002fcc g     F .text.itcm	000000c0 eepromemu_flash_erase_sector
+00001ef4  w    F .text.itcm	0000019c CPixelLEDController<(EOrder)66, 1, 4294967295ul>::show(CRGB const*, int, CRGB)
+20000000 g       .data	00000000 _sdata
+60001bc8 g     O .text.progmem	000000af usb_config_descriptor_480
+60001664 g     F .text.code	00000002 startup_default_early_hook
+600015ec g     F .text.code	00000028 ResetHandler
+00004734 g     F .text.itcm	0000001e usb_serial_getchar
+20002668 g     O .bss	00000008 usb_cdc_line_coding
+20002334 g     O .bss	00000004 EventResponder::lastYield
+00002d34 g     F .text.itcm	00000084 pinMode
+20001720 g     O .bss	00000010 FastLED
+60008000 g     O .text.csf	00000c00 hab_csf
+20280000 g       .text.csf	00000000 _heap_end
+20002324 g     O .bss	00000004 CLEDController::m_pTail
+00004e94 g       .data	00000000 __exidx_start
+20002328 g     O .bss	00000004 EventResponder::firstYield
+00004e28 g     F .text.itcm	0000004c __libc_init_array
+00003f70  w    F .text.itcm	00000004 usb_serial_class::clear()
+000006a4 g     F .text.itcm	00000060 PrintIdentify()
+60006b18 g       *ABS*	00000000 _sdataload
+200026a1 g     O .bss	00000001 usb_cdc_line_rtsdtr
+20002614 g     O .bss	00000048 serialProcessor
+60001a68 g     F .text.code	00000000 _init
+00004484 g     F .text.itcm	00000002 usb_serial_reset
+00004c1c g     F .text.itcm	00000020 strtol
+0000308c g     F .text.itcm	00000138 eeprom_write_byte
+20002696 g     O .bss	00000001 keyboard_leds
+60001b18 g     O .text.progmem	000000af usb_config_descriptor_12
+200026e0 g       .bss	00000000 _ebss
+20002338  w    O .bss	00000034 CFastLED::addLeds<WS2812B, (unsigned char)6, (EOrder)66>(CRGB*, int, int)::c
+00003f90 g     F .text.itcm	00000028 usb_joystick_configure
+00001d70  w    F .text.itcm	00000184 CPixelLEDController<(EOrder)66, 1, 4294967295ul>::showColor(CRGB const&, int, CRGB)
+20002693  w    O .bss	00000001 PixelController<(EOrder)66, 1, 4294967295ul>::init_binary_dithering()::R
+20203140 g       .bss.dma	00000000 _heap_start
+20002374 g     O .bss	00000138 __sf
+200024cc g     O .bss	00000004 lastSend
+00000001 g       *ABS*	00000000 _itcm_block_count
+20001300 g     O .bss	00000020 endpoint0_transfer_data
+000049c0 g     F .text.itcm	000000f4 pwm_init
+60008c00 g       .text.csf	00000000 __text_csf_end
+60001790 g     F .text.code	00000064 usb_pll_start
+00000704  w    F .text.itcm	0000021c SerialProcessor::UpdateSensorCount()
+200012e0 g     O .bss	00000020 endpoint0_transfer_ack
+20002670 g     O .bss	00000004 usb_cdc_line_rtsdtr_millis
+00003ec0 g     F .text.itcm	0000002c usb_transmit
+200024d0 g     O .bss	000000c0 leds
+0000271c g     F .text.itcm	00000020 systick_isr
+20000c80 g     O .data	00000010 Serial
+00003f88  w    F .text.itcm	00000006 usb_serial_class::write(unsigned char)
+60001664  w    F .text.code	00000002 startup_early_hook
+00004664 g     F .text.itcm	00000044 usb_serial_peekchar
+0000006c  w    F .text.itcm	00000004 CLEDController::beginShowLeds()
+00002920 g     F .text.itcm	00000314 set_arm_clock
+2000265c g     O .bss	00000004 systick_cycle_count
+20000dc4 g     O .data	00000016 usb_string_serial_number_default
+20002674 g     O .bss	0000000c usb_joystick_data
+00003f78  w    F .text.itcm	00000004 usb_serial_class::flush()
+000027d8  w    F .text.itcm	00000004 usb_serial_class::read()
+00000084  w    F .text.itcm	00000020 ClocklessController<6, 250, 625, 375, (EOrder)66, 0, false, 50>::init()
+00003e90 g     F .text.itcm	00000030 usb_prepare_transfer
+00003370 g     F .text.itcm	00000188 unused_interrupt_vector
+20002680 g     O .bss	00000004 usb_timer0_callback
+600017f4 g     F .text.code	00000138 tempmon_init
+0000007c  w    F .text.itcm	00000006 ClocklessController<6, 250, 625, 375, (EOrder)66, 0, false, 50>::getMaxRefreshRate() const
+00002e60 g     F .text.itcm	00000088 eeprom_read_byte
+000046c4 g     F .text.itcm	00000070 usb_serial_flush_input
+00004754 g     F .text.itcm	00000028 usb_serial_putchar
+00000024 g       *ABS*	00000000 _teensy_model_identifier
+000022fc g     F .text.itcm	00000064 CFastLED::addLeds(CLEDController*, CRGB*, int, int)
+60001a14 g     F .text.code	00000054 _reboot_Teensyduino_
+60001668 g     F .text.code	00000002 startup_default_middle_hook
+000037b4 g     F .text.itcm	0000060c usb_isr
+200005b4  w    O .data	00000028 vtable for usb_serial_class
+200025f0 g     O .bss	00000004 scale_cpu_cycles_to_microseconds
+00000078  w    F .text.itcm	00000004 CPixelLEDController<(EOrder)66, 1, 4294967295ul>::lanes()
+20000ddb g     O .data	00000001 currentBrightness
+00000b0c  w    F .text.itcm	000008f0 SerialProcessor::CheckAndMaybeProcessData()
+000047d8 g     F .text.itcm	0000009c usb_serial_flush_output
+20001000 g     O .data	000002c0 _VectorsRam
+200026a5 g     O .bss	00000001 yield_active_check_flags
+200026a3 g     O .bss	00000001 usb_high_speed
+00004d94 g     F .text.itcm	00000086 memset
+000031c4 g     F .text.itcm	00000010 main
+20200000 g     O .bss.dma	000000af usb_descriptor_buffer
+00003f10 g     F .text.itcm	00000060 usb_init_serialnumber
+60001abc g       .text.code	00000000 __init_array_end
+00000074  w    F .text.itcm	00000004 CLEDController::getMaxRefreshRate() const
+0000051c g     F .text.itcm	000000ac ApplyDefaultSensorConfig(unsigned int)
+000027e0 g     F .text.itcm	0000008c Stream::readBytesUntil(char, char*, unsigned int)
+00002ce0 g     F .text.itcm	00000054 micros
+000005c8 g     F .text.itcm	000000dc PrintLedConfig()
+60001b14 g     O .text.progmem	00000004 string0
+0000477c g     F .text.itcm	00000014 usb_serial_write
+6000166c  w    F .text.code	00000002 startup_late_hook
+00003f74  w    F .text.itcm	00000004 usb_serial_class::available()
+00003fb8 g     F .text.itcm	000000f0 usb_joystick_send
+20000000 g     O .data	00000400 endpoint_queue_head
+60001abc  w    O .text.progmem	0000003e usb_string_product_name
+00002c34 g     F .text.itcm	000000ac delay
+00004e90 g     F .fini	00000000 _fini
+60001020 g     O .text.headers	0000000c BootData
+000027b0 g     F .text.itcm	00000016 Print::print(long)
+000034f8 g     F .text.itcm	00000004 Panic_Temp_isr
+20002318  w    O .bss	00000004 guard variable for CFastLED::addLeds<WS2812B, (unsigned char)6, (EOrder)66>(CRGB*, int, int)::c
+20000c90 g     O .data	00000004 _impure_ptr
+000002b0 g     F .text.itcm	00000130 ResolveButtonGroups()
+60001ab0 g       .text.code	00000000 __preinit_array_end
+0000378c g     F .text.itcm	00000028 usb_stop_sof_interrupts
+000013fc g     F .text.itcm	0000018c setup
+200009ac g     O .data	000000cc usb_descriptor_list
+2000268f g     O .bss	00000001 usb_joystick_class::manual_mode
+20078000 g       .text.csf	00000000 _estack
+00004790 g     F .text.itcm	00000048 usb_serial_write_buffer_free
+00004488 g     F .text.itcm	00000100 usb_serial_configure
+200012c0 g       .data	00000000 _edata
+000024f4 g     F .text.itcm	0000018c CFastLED::showColor(CRGB const&, unsigned char)
+00003f7c  w    F .text.itcm	00000004 usb_serial_class::availableForWrite()
+00000920  w    F .text.itcm	000001ec SerialProcessor::UpdateSensorZone()
+00003308 g     F .text.itcm	00000066 ultoa
+000026d4 g     F .text.itcm	00000044 EventResponder::runFromInterrupt()
+000027dc  w    F .text.itcm	00000004 usb_serial_class::peek()
+20000a78 g     O .data	00000200 _impure_data
+2000060c g     O .data	00000101 _ctype_
+60001ab0 g       .text.code	00000000 __init_array_start
+20002320 g     O .bss	00000004 CLEDController::m_pHead
+0000286c g     F .text.itcm	000000b4 analogRead
+20000c78 g     O .data	00000004 F_BUS_ACTUAL
+20000990 g     O .data	0000001c pin_to_channel
+00000000 g       .text.itcm	00000000 _stext
+60001abc g     O .text.progmem	0000003e usb_string_product_name_default
+200024c4 g     O .bss	00000008 kButtonGroupPressed
+60001668  w    F .text.code	00000002 startup_middle_hook
+60001674 g     F .text.code	0000011c configure_cache
+60001ab0 g       .text.code	00000000 __preinit_array_start
+00003eec g     F .text.itcm	00000020 usb_receive
+00008c00 g       *ABS*	00000000 _flashimagelen
+00004ab4 g     F .text.itcm	00000024 rtc_get
+00002718 g     F .text.itcm	00000004 pendablesrvreq_isr
+00004588 g     F .text.itcm	000000dc usb_serial_read
+000027c8 g     F .text.itcm	0000000e Print::printNumber(unsigned long, unsigned char, unsigned char)
+00003e24 g     F .text.itcm	0000006c usb_config_tx
+20000d00 g     O .data	00000004 kNumSensors
+20000dc4  w    O .data	00000016 usb_string_serial_number
+000003e0 g     F .text.itcm	0000013c SaveSensorConfigToEeprom()
+
+
