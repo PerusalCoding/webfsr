@@ -2381,11 +2381,15 @@ const Dashboard = () => {
 						onSecondaryThresholdChange={advancedTuningEnabled ? handleSecondaryThresholdChange : undefined}
 					/>
 				</div>
-				{advancedTuningEnabled && (
-					<div className="shrink-0 mt-6 pt-2 border-t border-border/40">
-						<SensorMiniControls index={index} />
-					</div>
-				)}
+				{/* Always mounted at a fixed height -- only the content inside
+				    toggles. See the matching comment in the personal/dev
+				    build for the full reasoning: the graph above (flex-1)
+				    was still resizing on toggle because this sibling's
+				    presence/height was conditional, even after the outer box
+				    became constant-height. */}
+				<div className="shrink-0 h-[152px] mt-6 pt-2 border-t border-border/40">
+					{advancedTuningEnabled && <SensorMiniControls index={index} />}
+				</div>
 			</div>
 		);
 	});
