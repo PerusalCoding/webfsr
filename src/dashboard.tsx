@@ -1724,18 +1724,22 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 					onChange={(e) => commitButtonGroup(index, Number(e.target.value))}
 					className="w-full text-[10px] bg-white dark:bg-neutral-900 border border-border rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring"
 				>
-					<option value={index} className="bg-white dark:bg-neutral-900">Own button</option>
+					<option value={index} className="bg-white dark:bg-neutral-900">Own button (#{index})</option>
 					{Array.from({ length: effectiveCount }, (_, j) => j)
 						.filter((j) => j !== index)
 						.map((j) => (
 							<option key={j} value={j} className="bg-white dark:bg-neutral-900">
-								Share w/ {sensorLabels[j] || `Sensor ${j + 1}`}
+								{/* Always include the slot number -- duplicate labels
+								    (e.g. two sensors both named "Up 2") made entries
+								    indistinguishable, likely causing the wrong one to
+								    get selected. */}
+								Share w/ {sensorLabels[j] || `Sensor ${j + 1}`} (#{j})
 							</option>
 						))}
 				</select>
 			</div>
 			{t.buttonGroup !== index && (
-				<p className="text-amber-500">⚠ shares button with #{t.buttonGroup}</p>
+				<p className="text-amber-500">⚠ shares button with {sensorLabels[t.buttonGroup] || `Sensor ${t.buttonGroup + 1}`} (#{t.buttonGroup})</p>
 			)}
 		</div>
 	);
