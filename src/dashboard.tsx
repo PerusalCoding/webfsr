@@ -883,9 +883,6 @@ function SensorTuningSection({
 	const effectiveCount = numSensors > 0 ? numSensors : 4;
 	const [tuning, setTuning] = useState<SensorTuning[]>(() => loadTuning(effectiveCount));
 	const [tuningOpen, setTuningOpen] = useState<boolean>(false);
-	// Tracks the most recent group change so handleTuningLine can ignore
-	// the firmware echo for 500ms and not reset the dropdown mid-change.
-	const lastGroupChangeRef = useRef<{ sensor: number; time: number } | null>(null);
 	const tuningDrag = useRowDragReorder(moveDisplayPosition);
 	const [expandedSensor, setExpandedSensor] = useState<number | null>(null);
 
@@ -942,22 +939,8 @@ function SensorTuningSection({
 		const releaseDebounceMs = hasDebounceField ? maybeDebounce : 15;
 		setTuning((prev) => {
 			if (sensor < 0 || sensor >= prev.length) return prev;
-			// If a group change was made for this sensor within the last 500ms,
-			// keep the UI value rather than letting the firmware echo overwrite it.
-			// This prevents the dropdown from snapping back during the round-trip.
-			const pendingChange = lastGroupChangeRef.current;
-			const ignoreFirmwareGroup =
-				pendingChange !== null &&
-				pendingChange.sensor === sensor &&
-				Date.now() - pendingChange.time < 500;
 			const updated = [...prev];
-			updated[sensor] = {
-				trigger,
-				release,
-				gainX100: gain,
-				buttonGroup: ignoreFirmwareGroup ? (prev[sensor]?.buttonGroup ?? buttonGroup) : buttonGroup,
-				releaseDebounceMs,
-			};
+			updated[sensor] = { trigger, release, gainX100: gain, buttonGroup, releaseDebounceMs };
 			saveTuning(updated);
 			return updated;
 		});
@@ -1011,13 +994,7 @@ function SensorTuningSection({
 	const commitTrigger = (i: number, val: number) => { updateTuning(i, { trigger: val }); sendTrigger(i, val); };
 	const commitRelease = (i: number, val: number) => { updateTuning(i, { release: val }); sendRelease(i, val); };
 	const commitGain    = (i: number, val: number) => { updateTuning(i, { gainX100: val }); sendGain(i, val); };
-	const commitButtonGroup = (i: number, group: number) => {
-		// Mark this sensor as having a pending group change so handleTuningLine
-		// can ignore the firmware echo for 500ms and not reset the dropdown.
-		lastGroupChangeRef.current = { sensor: i, time: Date.now() };
-		updateTuning(i, { buttonGroup: group });
-		sendButtonGroup(i, group);
-	};
+	const commitButtonGroup = (i: number, group: number) => { updateTuning(i, { buttonGroup: group }); sendButtonGroup(i, group); };
 	const commitReleaseDebounce = (i: number, ms: number) => { updateTuning(i, { releaseDebounceMs: ms }); sendReleaseDebounce(i, ms); };
 
 	// Quick presets for common situations
@@ -1705,17 +1682,50 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 	const controls = (SensorTuningSection as unknown as { _getControls?: () => SensorTuningControls })._getControls?.();
 	if (!controls) return null;
 	const { effectiveCount, sensorLabels, commitGain, commitButtonGroup, commitReleaseDebounce } = controls;
-	// Fall back to sane defaults instead of vanishing entirely when
-	// tuning[index] is momentarily missing -- see the matching comment
-	// in the personal/dev build for the full reasoning.
 	const t = tuning[index] ?? { trigger: 700, release: 300, gainX100: 100, buttonGroup: index, releaseDebounceMs: 15 };
+
+	// LOCAL optimistic state for the group dropdown.
+	// Problem: `tuning` is a shared external store snapshot. When ANY sensor's
+	// group changes, publishTuningStore fires and every SensorMiniControls
+	// re-renders from the same snapshot simultaneously. If the snapshot array
+	// has any index offset (e.g. the changed sensor's new value bleeds into
+	// a neighbor's slot), every dropdown snaps to a wrong value at once.
+	//
+	// Fix: each instance keeps its own `localGroup` that it uses as the
+	// dropdown's displayed value. It only syncs FROM the external store when
+	// the store's value changes AND it didn't originate from this instance's
+	// own last commit (tracked via `lastCommittedRef`). This decouples each
+	// dropdown from the shared store mid-edit while still accepting legitimate
+	// external updates (e.g. firmware echoes on connect, Sync from pad).
+	const lastCommittedRef = useRef<number | null>(null);
+	const [localGroup, setLocalGroup] = useState<number>(() => t.buttonGroup);
+
+	// Sync local state from store only when the store changes externally.
+	// If this instance was the one that changed it (lastCommittedRef matches),
+	// skip the sync so the dropdown doesn't flicker.
+	const storeGroup = t.buttonGroup;
+	useEffect(() => {
+		if (lastCommittedRef.current !== null && lastCommittedRef.current === storeGroup) {
+			// This was our own change echoed back -- clear the guard and keep local.
+			lastCommittedRef.current = null;
+			return;
+		}
+		// External change (firmware sync, another sensor's group affecting ours,
+		// or initial load) -- accept it.
+		setLocalGroup(storeGroup);
+	}, [storeGroup]);
+
+	const handleGroupChange = (newGroup: number) => {
+		// Immediately update local display so the dropdown feels instant.
+		setLocalGroup(newGroup);
+		// Record what we're committing so the useEffect above can ignore
+		// the store echo that comes back after commitButtonGroup fires.
+		lastCommittedRef.current = newGroup;
+		commitButtonGroup(index, newGroup);
+	};
 
 	return (
 		<div className="flex flex-col gap-1.5 px-2 py-1.5 rounded border border-border/60 bg-muted/10 text-[10px]">
-			{/* Label+value share a line ABOVE the slider (not beside it) so
-			    the slider always gets the full column width -- with 8
-			    narrow columns, label+slider+value on one line didn't
-			    reliably fit. */}
 			<div className="flex flex-col gap-0.5">
 				<div className="flex items-center justify-between">
 					<span className="text-muted-foreground">Gain</span>
@@ -1741,12 +1751,13 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 				/>
 			</div>
 
-			{/* Button Group */}
+			{/* Button Group — uses localGroup (optimistic) not t.buttonGroup (store)
+			    so the dropdown never flickers when the shared store updates. */}
 			<div className="flex flex-col gap-0.5">
 				<span className="text-muted-foreground">Group</span>
 				<select
-					value={t.buttonGroup}
-					onChange={(e) => commitButtonGroup(index, Number(e.target.value))}
+					value={localGroup}
+					onChange={(e) => handleGroupChange(Number(e.target.value))}
 					className="w-full text-[10px] bg-white dark:bg-neutral-900 border border-border rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring"
 				>
 					<option value={index} className="bg-white dark:bg-neutral-900">Own button (#{index})</option>
@@ -1754,17 +1765,13 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 						.filter((j) => j !== index)
 						.map((j) => (
 							<option key={j} value={j} className="bg-white dark:bg-neutral-900">
-								{/* Always include the slot number -- duplicate labels
-								    (e.g. two sensors both named "Up 2") made entries
-								    indistinguishable, likely causing the wrong one to
-								    get selected. */}
 								Share w/ {sensorLabels[j] || `Sensor ${j + 1}`} (#{j})
 							</option>
 						))}
 				</select>
 			</div>
-			{t.buttonGroup !== index && (
-				<p className="text-amber-500">⚠ shares button with {sensorLabels[t.buttonGroup] || `Sensor ${t.buttonGroup + 1}`} (#{t.buttonGroup})</p>
+			{localGroup !== index && (
+				<p className="text-amber-500">⚠ shares button with {sensorLabels[localGroup] || `Sensor ${localGroup + 1}`} (#{localGroup})</p>
 			)}
 		</div>
 	);
@@ -1963,8 +1970,8 @@ const Dashboard = () => {
 	// by SensorTuningSection, used to show the main page sensor bars'
 	// threshold lines correctly once Advanced mode is on (see
 	// handleThresholdChange and sensorBars below).
-	const [liveTriggerValues, setLiveTriggerValues] = useState<number[]>(() => Array(8).fill(512));
-	const [liveReleaseValues, setLiveReleaseValues] = useState<number[]>(() => Array(8).fill(300));
+	const [liveTriggerValues, setLiveTriggerValues] = useState<number[]>([]);
+	const [liveReleaseValues, setLiveReleaseValues] = useState<number[]>([]);
 	const onTuningValuesChangeStable = useStableCallback((triggers: number[], releases: number[]) => {
 		setLiveTriggerValues(triggers);
 		setLiveReleaseValues(releases);
