@@ -883,6 +883,9 @@ function SensorTuningSection({
 	const effectiveCount = numSensors > 0 ? numSensors : 4;
 	const [tuning, setTuning] = useState<SensorTuning[]>(() => loadTuning(effectiveCount));
 	const [tuningOpen, setTuningOpen] = useState<boolean>(false);
+	// Tracks the most recent group change so handleTuningLine can ignore
+	// the firmware echo for 500ms and not reset the dropdown mid-change.
+	const lastGroupChangeRef = useRef<{ sensor: number; time: number } | null>(null);
 	const tuningDrag = useRowDragReorder(moveDisplayPosition);
 	const [expandedSensor, setExpandedSensor] = useState<number | null>(null);
 
@@ -939,8 +942,22 @@ function SensorTuningSection({
 		const releaseDebounceMs = hasDebounceField ? maybeDebounce : 15;
 		setTuning((prev) => {
 			if (sensor < 0 || sensor >= prev.length) return prev;
+			// If a group change was made for this sensor within the last 500ms,
+			// keep the UI value rather than letting the firmware echo overwrite it.
+			// This prevents the dropdown from snapping back during the round-trip.
+			const pendingChange = lastGroupChangeRef.current;
+			const ignoreFirmwareGroup =
+				pendingChange !== null &&
+				pendingChange.sensor === sensor &&
+				Date.now() - pendingChange.time < 500;
 			const updated = [...prev];
-			updated[sensor] = { trigger, release, gainX100: gain, buttonGroup, releaseDebounceMs };
+			updated[sensor] = {
+				trigger,
+				release,
+				gainX100: gain,
+				buttonGroup: ignoreFirmwareGroup ? (prev[sensor]?.buttonGroup ?? buttonGroup) : buttonGroup,
+				releaseDebounceMs,
+			};
 			saveTuning(updated);
 			return updated;
 		});
@@ -994,7 +1011,13 @@ function SensorTuningSection({
 	const commitTrigger = (i: number, val: number) => { updateTuning(i, { trigger: val }); sendTrigger(i, val); };
 	const commitRelease = (i: number, val: number) => { updateTuning(i, { release: val }); sendRelease(i, val); };
 	const commitGain    = (i: number, val: number) => { updateTuning(i, { gainX100: val }); sendGain(i, val); };
-	const commitButtonGroup = (i: number, group: number) => { updateTuning(i, { buttonGroup: group }); sendButtonGroup(i, group); };
+	const commitButtonGroup = (i: number, group: number) => {
+		// Mark this sensor as having a pending group change so handleTuningLine
+		// can ignore the firmware echo for 500ms and not reset the dropdown.
+		lastGroupChangeRef.current = { sensor: i, time: Date.now() };
+		updateTuning(i, { buttonGroup: group });
+		sendButtonGroup(i, group);
+	};
 	const commitReleaseDebounce = (i: number, ms: number) => { updateTuning(i, { releaseDebounceMs: ms }); sendReleaseDebounce(i, ms); };
 
 	// Quick presets for common situations
@@ -1682,8 +1705,10 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 	const controls = (SensorTuningSection as unknown as { _getControls?: () => SensorTuningControls })._getControls?.();
 	if (!controls) return null;
 	const { effectiveCount, sensorLabels, commitGain, commitButtonGroup, commitReleaseDebounce } = controls;
-	const t = tuning[index];
-	if (!t) return null;
+	// Fall back to sane defaults instead of vanishing entirely when
+	// tuning[index] is momentarily missing -- see the matching comment
+	// in the personal/dev build for the full reasoning.
+	const t = tuning[index] ?? { trigger: 700, release: 300, gainX100: 100, buttonGroup: index, releaseDebounceMs: 15 };
 
 	return (
 		<div className="flex flex-col gap-1.5 px-2 py-1.5 rounded border border-border/60 bg-muted/10 text-[10px]">
@@ -1938,8 +1963,8 @@ const Dashboard = () => {
 	// by SensorTuningSection, used to show the main page sensor bars'
 	// threshold lines correctly once Advanced mode is on (see
 	// handleThresholdChange and sensorBars below).
-	const [liveTriggerValues, setLiveTriggerValues] = useState<number[]>([]);
-	const [liveReleaseValues, setLiveReleaseValues] = useState<number[]>([]);
+	const [liveTriggerValues, setLiveTriggerValues] = useState<number[]>(() => Array(8).fill(512));
+	const [liveReleaseValues, setLiveReleaseValues] = useState<number[]>(() => Array(8).fill(300));
 	const onTuningValuesChangeStable = useStableCallback((triggers: number[], releases: number[]) => {
 		setLiveTriggerValues(triggers);
 		setLiveReleaseValues(releases);
