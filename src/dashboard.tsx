@@ -175,6 +175,13 @@ interface LedPreset {
 	brightness: number;
 }
 
+// Bridge shape returned by LedSection's _getLedControls() -- powers the
+// LED Pad Preview tab.
+interface LedControls {
+	sensors: SensorZone[];
+	updateSensor: (i: number, patch: Partial<SensorZone>) => void;
+}
+
 const DEFAULT_COLORS = [
 	"#e84040", "#4a7fff", "#ff9020", "#3fcf6e",
 	"#cc44ff", "#00ddcc", "#ffdd00", "#ff6688",
@@ -488,6 +495,10 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition }: 
 	// a backup, same reasoning as SensorTuningSection's _getSnapshot above.
 	(LedSection as unknown as { _getSnapshot: () => { sensors: SensorZone[]; brightness: number } })._getSnapshot =
 		() => ({ sensors, brightness });
+	// Lets the LED Pad Preview tab read current zones/colors AND push
+	// changes back -- see the matching comment in the personal/dev build.
+	(LedSection as unknown as { _getLedControls: () => LedControls })._getLedControls =
+		() => ({ sensors, updateSensor });
 
 	const totalLeds = Math.max(16, ...sensors.map(s => s.ledOffset + s.ledCount));
 
@@ -1777,6 +1788,152 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 	);
 });
 
+/*=============================================================================
+ LED PAD PREVIEW -- visual dance-pad layout (Up/Down/Left/Right cross) for
+ the LEDs tab. See the matching comment in the personal/dev build for the
+ full design rationale.
+=============================================================================*/
+const ARROW_GLYPH: Record<"up" | "down" | "left" | "right", string> = {
+	up: "▲", down: "▼", left: "◀", right: "▶",
+};
+
+function ArrowTile({
+	direction, sensor, onClick, selected,
+}: {
+	direction: "up" | "down" | "left" | "right";
+	sensor: SensorZone | undefined;
+	onClick: () => void;
+	selected: boolean;
+}) {
+	const color = sensor?.color ?? "#444444";
+	return (
+		<button
+			type="button"
+			onClick={onClick}
+			disabled={!sensor}
+			className={`relative flex flex-col items-center justify-center gap-1 w-28 h-28 rounded-xl border-2 transition-all ${
+				sensor ? "cursor-pointer hover:brightness-110" : "cursor-not-allowed opacity-40"
+			} ${selected ? "ring-2 ring-offset-2 ring-offset-background ring-foreground" : ""}`}
+			style={{
+				background: "linear-gradient(160deg, #2a2a2e, #17171a)",
+				borderColor: sensor ? color : "#333",
+				boxShadow: sensor ? `0 0 14px -2px ${color}` : "none",
+			}}
+			title={sensor ? `${sensor.label || direction} -- #${sensor.sensorIndex}` : "Not configured"}
+		>
+			<span className="text-4xl leading-none" style={{ color: sensor ? color : "#555" }}>
+				{ARROW_GLYPH[direction]}
+			</span>
+			{sensor ? (
+				<div className="text-center leading-tight">
+					<div className="text-[10px] font-medium text-white/90">{sensor.label || direction}</div>
+					<div className="text-[9px] text-white/50">Off {sensor.ledOffset} · Cnt {sensor.ledCount}</div>
+				</div>
+			) : (
+				<div className="text-[9px] text-white/40">Not set up</div>
+			)}
+		</button>
+	);
+}
+
+function LedPadPreview() {
+	const [selectedDir, setSelectedDir] = useState<"up" | "down" | "left" | "right" | null>(null);
+	const controls = (LedSection as unknown as { _getLedControls?: () => LedControls })._getLedControls?.();
+
+	if (!controls) {
+		return <p className="text-sm text-muted-foreground p-4">Connect to your pad to preview its LED layout.</p>;
+	}
+	const { sensors, updateSensor } = controls;
+
+	const findByLabel = (label: string) =>
+		sensors.find((s) => s.label.trim().toLowerCase() === label);
+
+	const arrows: { direction: "up" | "down" | "left" | "right"; sensor: SensorZone | undefined; arrayIndex: number }[] =
+		(["up", "down", "left", "right"] as const).map((direction) => {
+			const sensor = findByLabel(direction);
+			const arrayIndex = sensor ? sensors.indexOf(sensor) : -1;
+			return { direction, sensor, arrayIndex };
+		});
+
+	const selected = arrows.find((a) => a.direction === selectedDir);
+
+	return (
+		<div className="flex flex-col items-center gap-6 p-4 overflow-y-auto">
+			<div className="grid grid-cols-3 grid-rows-3 gap-3 w-fit">
+				<div />
+				<ArrowTile direction="up" sensor={arrows[0].sensor} selected={selectedDir === "up"}
+					onClick={() => setSelectedDir(selectedDir === "up" ? null : "up")} />
+				<div />
+
+				<ArrowTile direction="left" sensor={arrows[2].sensor} selected={selectedDir === "left"}
+					onClick={() => setSelectedDir(selectedDir === "left" ? null : "left")} />
+				<div className="w-28 h-28 rounded-xl border border-border/30 bg-muted/10" />
+				<ArrowTile direction="right" sensor={arrows[3].sensor} selected={selectedDir === "right"}
+					onClick={() => setSelectedDir(selectedDir === "right" ? null : "right")} />
+
+				<div />
+				<ArrowTile direction="down" sensor={arrows[1].sensor} selected={selectedDir === "down"}
+					onClick={() => setSelectedDir(selectedDir === "down" ? null : "down")} />
+				<div />
+			</div>
+
+			{selected?.sensor && selected.arrayIndex >= 0 && (
+				<div className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-card w-full max-w-sm">
+					<div className="flex items-center justify-between">
+						<h3 className="text-sm font-semibold capitalize">{selected.direction} (#{selected.sensor.sensorIndex})</h3>
+						<button type="button" onClick={() => setSelectedDir(null)} className="text-xs text-muted-foreground hover:text-foreground">
+							Close
+						</button>
+					</div>
+
+					<label className="flex flex-col gap-1 text-xs">
+						Color
+						<input
+							type="color"
+							value={selected.sensor.color}
+							onChange={(e) => updateSensor(selected.arrayIndex, { color: e.target.value })}
+							className="h-9 w-full rounded border border-border cursor-pointer"
+						/>
+					</label>
+
+					<label className="flex flex-col gap-1 text-xs">
+						LED Offset
+						<input
+							type="number" min={0} max={255}
+							value={selected.sensor.ledOffset}
+							onChange={(e) => updateSensor(selected.arrayIndex, { ledOffset: Math.max(0, Number(e.target.value) || 0) })}
+							className="px-2 py-1 rounded border border-border bg-transparent text-sm"
+						/>
+					</label>
+
+					<label className="flex flex-col gap-1 text-xs">
+						LED Count
+						<input
+							type="number" min={1} max={64}
+							value={selected.sensor.ledCount}
+							onChange={(e) => updateSensor(selected.arrayIndex, { ledCount: Math.max(1, Number(e.target.value) || 1) })}
+							className="px-2 py-1 rounded border border-border bg-transparent text-sm"
+						/>
+					</label>
+
+					<p className="text-[10px] text-muted-foreground">
+						Changes here push to the board immediately, the same as editing this
+						sensor in the LED Panels list in the sidebar.
+					</p>
+				</div>
+			)}
+
+			{arrows.some((a) => !a.sensor) && (
+				<p className="text-xs text-muted-foreground text-center max-w-sm">
+					Grayed-out arrows don't have a sensor labeled exactly "Up", "Down", "Left",
+					or "Right" yet -- rename one in the LED Panels list (sidebar) to match if
+					you want it to show up here.
+				</p>
+			)}
+		</div>
+	);
+}
+
 const Dashboard = () => {
 	const colorSettings = useColorSettings();
 	const barSettings = useBarVisualizationSettings();
@@ -1960,6 +2117,7 @@ const Dashboard = () => {
 	// that legacy command -- otherwise it silently undoes the Advanced
 	// tuning the moment the main page is touched.
 	const [advancedTuningEnabled, setAdvancedTuningEnabled] = useState<boolean>(loadAdvancedMode);
+	const [mainTab, setMainTab] = useState<"sensors" | "leds">("sensors");
 	const toggleAdvancedTuningMode = useStableCallback(() => {
 		const next = !advancedTuningEnabled;
 		setAdvancedTuningEnabled(next);
@@ -1972,6 +2130,11 @@ const Dashboard = () => {
 	// handleThresholdChange and sensorBars below).
 	const [liveTriggerValues, setLiveTriggerValues] = useState<number[]>([]);
 	const [liveReleaseValues, setLiveReleaseValues] = useState<number[]>([]);
+	// Per-sensor "lock Release to Trigger" toggle -- see the matching
+	// comment in the personal/dev build for the full reasoning. Purely
+	// dashboard-side; the firmware still just receives independent "y"/
+	// "r" commands as always.
+	const [releaseLocked, setReleaseLocked] = useState<Record<number, boolean>>({});
 	const onTuningValuesChangeStable = useStableCallback((triggers: number[], releases: number[]) => {
 		setLiveTriggerValues(triggers);
 		setLiveReleaseValues(releases);
@@ -2288,12 +2451,28 @@ const Dashboard = () => {
 			// controls. liveTriggerValues is updated immediately here
 			// too, rather than waiting on the next "p" response, so the
 			// bar's own line doesn't visually lag behind the drag.
+			const prevTrigger = liveTriggerValues[index];
 			setLiveTriggerValues((prev) => {
 				const next = [...prev];
 				next[index] = value;
 				return next;
 			});
 			if (connected) sendText(`y ${index} ${value}\n`);
+
+			// Lock Release to Trigger: preserve whatever gap existed when
+			// the lock was turned on. Clamped to 0-1023 same as any other
+			// threshold value.
+			if (releaseLocked[index] && typeof prevTrigger === "number") {
+				const delta = value - prevTrigger;
+				const prevRelease = liveReleaseValues[index] ?? 0;
+				const newRelease = Math.max(0, Math.min(1023, prevRelease + delta));
+				setLiveReleaseValues((prev) => {
+					const next = [...prev];
+					next[index] = newRelease;
+					return next;
+				});
+				if (connected) sendText(`r ${index} ${newRelease}\n`);
+			}
 			return;
 		}
 
@@ -2417,13 +2596,34 @@ const Dashboard = () => {
 						onSecondaryThresholdChange={advancedTuningEnabled ? handleSecondaryThresholdChange : undefined}
 					/>
 				</div>
+				{/* Lock Release to Trigger toggle -- see the matching comment
+				    in the personal/dev build for why this can't sit inside
+				    SensorBar's own row (external component). Always
+				    mounted at a fixed height, same reasoning as the slot
+				    below it. */}
+				<div className="shrink-0 h-[26px] mt-1 flex items-center justify-center">
+					{advancedTuningEnabled && (
+						<button
+							type="button"
+							onClick={() => setReleaseLocked((prev) => ({ ...prev, [index]: !prev[index] }))}
+							title="When on, moving Trigger also moves Release by the same amount, preserving their gap"
+							className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border transition-colors ${
+								releaseLocked[index]
+									? "bg-foreground text-background border-foreground"
+									: "bg-transparent text-muted-foreground border-border"
+							}`}
+						>
+							{releaseLocked[index] ? "🔒" : "🔓"} Lock Release to Trigger
+						</button>
+					)}
+				</div>
 				{/* Always mounted at a fixed height -- only the content inside
 				    toggles. See the matching comment in the personal/dev
 				    build for the full reasoning: the graph above (flex-1)
 				    was still resizing on toggle because this sibling's
 				    presence/height was conditional, even after the outer box
 				    became constant-height. */}
-				<div className="shrink-0 h-[152px] mt-6 pt-2 border-t border-border/40">
+				<div className="shrink-0 h-[152px] mt-1 pt-2 border-t border-border/40">
 					{advancedTuningEnabled && <SensorMiniControls index={index} />}
 				</div>
 			</div>
@@ -2658,6 +2858,36 @@ const Dashboard = () => {
 			{/* Main content */}
 			<div className="h-full overflow-hidden">
 				<div className="h-full flex flex-col overflow-hidden p-2 relative">
+					{/* ── TOP TAB BAR ── */}
+					<div className="shrink-0 mb-2 flex items-center gap-1 border-b border-border">
+						<button
+							type="button"
+							onClick={() => setMainTab("sensors")}
+							className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+								mainTab === "sensors"
+									? "border-foreground text-foreground"
+									: "border-transparent text-muted-foreground hover:text-foreground"
+							}`}
+						>
+							Sensors
+						</button>
+						<button
+							type="button"
+							onClick={() => setMainTab("leds")}
+							className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+								mainTab === "leds"
+									? "border-foreground text-foreground"
+									: "border-transparent text-muted-foreground hover:text-foreground"
+							}`}
+						>
+							LEDs
+						</button>
+					</div>
+
+					{mainTab === "leds" ? (
+						<LedPadPreview />
+					) : (
+					<>
 					{latestData ? (
 						<>
 							{/* ── SENSOR TUNING TOGGLE -- a simple button, not the full
@@ -2680,7 +2910,7 @@ const Dashboard = () => {
 						    dev build for the full reasoning (toggling used to resize
 						    this container, which is very likely what SensorBar's own
 						    internal sizing was mismeasuring on that transition). */}
-						<div className="flex gap-2 shrink-0 h-100 min-h-[420px]">
+						<div className="flex gap-2 shrink-0 h-100 min-h-[450px]">
 								<div className="px-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm grow">
 									{advancedTuningEnabled && (
 										<p className="text-[11px] text-amber-500 px-1 pt-2">
@@ -2849,6 +3079,8 @@ const Dashboard = () => {
 								</div>
 							)}
 						</>
+					)}
+					</>
 					)}
 				</div>
 			</div>

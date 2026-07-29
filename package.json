@@ -1,6 +1,6 @@
 {
 	"name": "awakened-animus",
-	"version": "1.0.0",
+	"version": "1.0.3",
 	"private": true,
 	"type": "module",
 	"description": "Web client for managing FSR dance pads",
