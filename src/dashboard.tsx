@@ -1836,103 +1836,6 @@ function ArrowTile({
 	);
 }
 
-function LedPadPreview() {
-	const [selectedDir, setSelectedDir] = useState<"up" | "down" | "left" | "right" | null>(null);
-	const controls = (LedSection as unknown as { _getLedControls?: () => LedControls })._getLedControls?.();
-
-	if (!controls) {
-		return <p className="text-sm text-muted-foreground p-4">Connect to your pad to preview its LED layout.</p>;
-	}
-	const { sensors, updateSensor } = controls;
-
-	const findByLabel = (label: string) =>
-		sensors.find((s) => s.label.trim().toLowerCase() === label);
-
-	const arrows: { direction: "up" | "down" | "left" | "right"; sensor: SensorZone | undefined; arrayIndex: number }[] =
-		(["up", "down", "left", "right"] as const).map((direction) => {
-			const sensor = findByLabel(direction);
-			const arrayIndex = sensor ? sensors.indexOf(sensor) : -1;
-			return { direction, sensor, arrayIndex };
-		});
-
-	const selected = arrows.find((a) => a.direction === selectedDir);
-
-	return (
-		<div className="flex flex-col items-center gap-6 p-4 overflow-y-auto">
-			<div className="grid grid-cols-3 grid-rows-3 gap-3 w-fit">
-				<div />
-				<ArrowTile direction="up" sensor={arrows[0].sensor} selected={selectedDir === "up"}
-					onClick={() => setSelectedDir(selectedDir === "up" ? null : "up")} />
-				<div />
-
-				<ArrowTile direction="left" sensor={arrows[2].sensor} selected={selectedDir === "left"}
-					onClick={() => setSelectedDir(selectedDir === "left" ? null : "left")} />
-				<div className="w-28 h-28 rounded-xl border border-border/30 bg-muted/10" />
-				<ArrowTile direction="right" sensor={arrows[3].sensor} selected={selectedDir === "right"}
-					onClick={() => setSelectedDir(selectedDir === "right" ? null : "right")} />
-
-				<div />
-				<ArrowTile direction="down" sensor={arrows[1].sensor} selected={selectedDir === "down"}
-					onClick={() => setSelectedDir(selectedDir === "down" ? null : "down")} />
-				<div />
-			</div>
-
-			{selected?.sensor && selected.arrayIndex >= 0 && (
-				<div className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-card w-full max-w-sm">
-					<div className="flex items-center justify-between">
-						<h3 className="text-sm font-semibold capitalize">{selected.direction} (#{selected.sensor.sensorIndex})</h3>
-						<button type="button" onClick={() => setSelectedDir(null)} className="text-xs text-muted-foreground hover:text-foreground">
-							Close
-						</button>
-					</div>
-
-					<label className="flex flex-col gap-1 text-xs">
-						Color
-						<input
-							type="color"
-							value={selected.sensor.color}
-							onChange={(e) => updateSensor(selected.arrayIndex, { color: e.target.value })}
-							className="h-9 w-full rounded border border-border cursor-pointer"
-						/>
-					</label>
-
-					<label className="flex flex-col gap-1 text-xs">
-						LED Offset
-						<input
-							type="number" min={0} max={255}
-							value={selected.sensor.ledOffset}
-							onChange={(e) => updateSensor(selected.arrayIndex, { ledOffset: Math.max(0, Number(e.target.value) || 0) })}
-							className="px-2 py-1 rounded border border-border bg-transparent text-sm"
-						/>
-					</label>
-
-					<label className="flex flex-col gap-1 text-xs">
-						LED Count
-						<input
-							type="number" min={1} max={64}
-							value={selected.sensor.ledCount}
-							onChange={(e) => updateSensor(selected.arrayIndex, { ledCount: Math.max(1, Number(e.target.value) || 1) })}
-							className="px-2 py-1 rounded border border-border bg-transparent text-sm"
-						/>
-					</label>
-
-					<p className="text-[10px] text-muted-foreground">
-						Changes here push to the board immediately, the same as editing this
-						sensor in the LED Panels list in the sidebar.
-					</p>
-				</div>
-			)}
-
-			{arrows.some((a) => !a.sensor) && (
-				<p className="text-xs text-muted-foreground text-center max-w-sm">
-					Grayed-out arrows don't have a sensor labeled exactly "Up", "Down", "Left",
-					or "Right" yet -- rename one in the LED Panels list (sidebar) to match if
-					you want it to show up here.
-				</p>
-			)}
-		</div>
-	);
-}
 
 const Dashboard = () => {
 	const colorSettings = useColorSettings();
@@ -2117,7 +2020,7 @@ const Dashboard = () => {
 	// that legacy command -- otherwise it silently undoes the Advanced
 	// tuning the moment the main page is touched.
 	const [advancedTuningEnabled, setAdvancedTuningEnabled] = useState<boolean>(loadAdvancedMode);
-	const [mainTab, setMainTab] = useState<"sensors" | "leds">("sensors");
+
 	const toggleAdvancedTuningMode = useStableCallback(() => {
 		const next = !advancedTuningEnabled;
 		setAdvancedTuningEnabled(next);
@@ -2858,42 +2761,12 @@ const Dashboard = () => {
 			{/* Main content */}
 			<div className="h-full overflow-hidden">
 				<div className="h-full flex flex-col overflow-hidden p-2 relative">
-					{/* ── TOP TAB BAR ── */}
-					<div className="shrink-0 mb-2 flex items-center gap-1 border-b border-border">
-						<button
-							type="button"
-							onClick={() => setMainTab("sensors")}
-							className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-								mainTab === "sensors"
-									? "border-foreground text-foreground"
-									: "border-transparent text-muted-foreground hover:text-foreground"
-							}`}
-						>
-							Sensors
-						</button>
-						<button
-							type="button"
-							onClick={() => setMainTab("leds")}
-							className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-								mainTab === "leds"
-									? "border-foreground text-foreground"
-									: "border-transparent text-muted-foreground hover:text-foreground"
-							}`}
-						>
-							LEDs
-						</button>
-					</div>
-
-					{mainTab === "leds" ? (
-						<LedPadPreview />
-					) : (
-					<>
 					{latestData ? (
-						<>
-							{/* ── SENSOR TUNING TOGGLE -- a simple button, not the full
-							    panel (that stays in the sidebar). Flips the same
-							    advancedTuningEnabled flag the sidebar's own toggle
-							    controls. ── */}
+					<>
+						{/* ── SENSOR TUNING TOGGLE -- a simple button, not the full
+						    panel (that stays in the sidebar). Flips the same
+						    advancedTuningEnabled flag the sidebar's own toggle
+						    controls. ── */}
 							<div className="shrink-0 mb-2 flex items-center gap-2">
 								<Button
 									variant={advancedTuningEnabled ? "default" : "outline"}
@@ -3078,10 +2951,8 @@ const Dashboard = () => {
 									)}
 								</div>
 							)}
-						</>
-					)}
 					</>
-					)}
+				)}
 				</div>
 			</div>
 
