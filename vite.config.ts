@@ -50,6 +50,7 @@ export default defineConfig({
 				"pwa-192x192.png",
 				"pwa-512x512.png",
 				"maskable-icon-512x512.png",
+				"pad-background.png", // Added here
 			],
 			manifest: {
 				name: "WebFSR",
