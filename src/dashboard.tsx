@@ -267,15 +267,18 @@ function saveCustomPresets(p: LedPreset[]) {
 
 /*===========================================================================*/
 
+
+
 interface LedSectionProps {
 	connected: boolean;
 	sendText: (text: string) => void;
 	thresholds: number[];
 	displayOrder: number[];
 	moveDisplayPosition: (fromPos: number, toPos: number) => void;
+	numSensors: number;  // live count from connected pad — used to auto-scale presets
 }
 
-function LedSection({ connected, sendText, displayOrder, moveDisplayPosition }: LedSectionProps) {
+function LedSection({ connected, sendText, displayOrder, moveDisplayPosition, numSensors }: LedSectionProps) {
 	const [sensors, setSensors]       = useState<SensorZone[]>(loadSensors);
 	const [brightness, setBrightness] = useState<number>(60);
 	const [ledOpen, setLedOpen]       = useState<boolean>(true);
@@ -284,6 +287,11 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition }: 
 	const [newPresetName, setNewPresetName] = useState<string>("");
 	const [showSaveInput, setShowSaveInput] = useState<boolean>(false);
 	const ledDrag = useRowDragReorder(moveDisplayPosition);
+
+	// Publish to the external store consumed by LedPadPreview (LEDs tab).
+	useEffect(() => {
+		publishLedStore(sensors);
+	}, [sensors]);
 
 	// Query firmware on connect. We deliberately do NOT push our locally
 	// cached `sensors` back to the firmware here -- doing so used to race
@@ -455,8 +463,31 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition }: 
 	};
 
 	const applyPreset = (preset: LedPreset) => {
-		setSensors([...preset.sensors]);
-		saveSensors([...preset.sensors]);
+		// Auto-scale the preset to match the connected pad's sensor count.
+		// If the pad has more sensors than the preset, fill the extras with
+		// default colors/offsets continuing from where the preset left off.
+		// If the pad has fewer, trim the preset down to fit.
+		const targetCount = numSensors > 0 ? numSensors : preset.sensors.length;
+		let scaledSensors: SensorZone[];
+		if (targetCount <= preset.sensors.length) {
+			scaledSensors = preset.sensors.slice(0, targetCount);
+		} else {
+			scaledSensors = [...preset.sensors];
+			for (let i = preset.sensors.length; i < targetCount; i++) {
+				const lastOffset = scaledSensors.length > 0
+					? scaledSensors[scaledSensors.length-1].ledOffset + scaledSensors[scaledSensors.length-1].ledCount
+					: 0;
+				scaledSensors.push({
+					sensorIndex: i,
+					label: DEFAULT_LABELS[i] ?? `S${i+1}`,
+					color: DEFAULT_COLORS[i % DEFAULT_COLORS.length],
+					ledOffset: lastOffset,
+					ledCount: preset.sensors[0]?.ledCount ?? 4,
+				});
+			}
+		}
+		setSensors(scaledSensors);
+		saveSensors(scaledSensors);
 		setBrightness(preset.brightness);
 		// Serialized with delays for the same reason as removeSensor above --
 		// firing every sensor's "l"/"z" commands back-to-back floods the
@@ -817,6 +848,22 @@ function subscribeTuningStore(callback: () => void) {
 }
 function getTuningStoreSnapshot() {
 	return tuningStoreSnapshot;
+}
+
+// ── LED sensor external store ── see matching comment in the personal/
+// dev build for the full reasoning.
+let ledStoreSnapshot: SensorZone[] = [];
+const ledStoreListeners = new Set<() => void>();
+function publishLedStore(next: SensorZone[]) {
+	ledStoreSnapshot = next;
+	ledStoreListeners.forEach((l) => l());
+}
+function subscribeLedStore(callback: () => void) {
+	ledStoreListeners.add(callback);
+	return () => ledStoreListeners.delete(callback);
+}
+function getLedStoreSnapshot() {
+	return ledStoreSnapshot;
 }
 
 function loadTuning(count: number): SensorTuning[] {
@@ -1487,7 +1534,7 @@ function FirmwareUpdateSection({ connected, sendText, connect, disconnect }: Fir
 				return;
 			}
 			if (backup.kind !== "webfsr-backup") {
-				setRestoreStatus("That file doesn't look like a WebFsr backup.");
+				setRestoreStatus("That file doesn't look like an Awakened Animus backup.");
 				return;
 			}
 			applyBackup(backup);
@@ -1505,7 +1552,7 @@ function FirmwareUpdateSection({ connected, sendText, connect, disconnect }: Fir
 		setFlashSucceeded(false);
 
 		if (!window.electronAPI) {
-			setFlashError("One-click updates only work in the WebFsr desktop app, not a browser tab.");
+			setFlashError("One-click updates only work in the Awakened Animus desktop app, not a browser tab.");
 			return;
 		}
 
@@ -1648,7 +1695,7 @@ function FirmwareUpdateSection({ connected, sendText, connect, disconnect }: Fir
 					)}
 
 					<p className="text-[10px] text-muted-foreground">
-						Update Now requires the WebFsr desktop app (not a browser tab) and will ask you
+						Update Now requires the Awakened Animus desktop app (not a browser tab) and will ask you
 						to press the button on your Teensy once the update starts.
 					</p>
 				</div>
@@ -1789,53 +1836,399 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 });
 
 /*=============================================================================
- LED PAD PREVIEW -- visual dance-pad layout (Up/Down/Left/Right cross) for
- the LEDs tab. See the matching comment in the personal/dev build for the
- full design rationale.
+ LED PAD PREVIEW -- visual dance-pad layout for the LEDs tab: a custom pad
+ background image with actual per-LED dot nodes overlaid directly on top
+ of each panel's real position, colored to match that sensor's assigned
+ color. See the matching comment in the personal/dev build for the full
+ design rationale, including the reactivity-bug fix (useSyncExternalStore
+ via the ledStore, instead of pulling from the bridge directly).
+
+ IMAGE SETUP REQUIRED: place your pad background image in your project's
+ public/ folder named to match PAD_BACKGROUND_URL below.
 =============================================================================*/
-const ARROW_GLYPH: Record<"up" | "down" | "left" | "right", string> = {
-	up: "▲", down: "▼", left: "◀", right: "▶",
+const PAD_BACKGROUND_URL = "/pad-background.png";
+
+type Direction = "up" | "down" | "left" | "right";
+
+const PANEL_RECT: Record<Direction, { top: string; left: string }> = {
+	up:    { top: "0%",       left: "33.333%" },
+	left:  { top: "33.333%",  left: "0%" },
+	right: { top: "33.333%",  left: "66.666%" },
+	down:  { top: "66.666%",  left: "33.333%" },
 };
 
-function ArrowTile({
-	direction, sensor, onClick, selected,
+// PanelTint overlays a pad panel with hue tint(s) that colorize the baked-in
+// 3D arrows in pad-background.png via CSS mix-blend-mode:hue, preserving all
+// the image's own lighting and 3D detail.
+//
+// When a panel has TWO sensors (primary + secondary "2"), the arrow is split
+// down its axis: primary tint covers the left/top half, secondary covers the
+// right/bottom half — matching the physical LED wiring where one FSR lights
+// one half of the strip and the other FSR lights the other.
+//
+// The LED strip shows individual squares, one per LED, each colored by its
+// owning sensor and labelled with its absolute LED index. Strip runs:
+//   • horizontally across the stem for Up / Down arrows
+//   • vertically down the stem for Left / Right arrows
+function PanelTint({
+	matches,
+	direction,
 }: {
-	direction: "up" | "down" | "left" | "right";
-	sensor: SensorZone | undefined;
-	onClick: () => void;
-	selected: boolean;
+	matches: { sensor: SensorZone; arrayIndex: number }[];
+	direction: Direction;
 }) {
-	const color = sensor?.color ?? "#444444";
+	if (matches.length === 0) return null;
+
+	const primary   = matches[0].sensor;
+	const secondary = matches[1]?.sensor;
+
+	// For Up/Down the "axis" that splits primary vs secondary is LEFT/RIGHT
+	// (left half = primary, right half = secondary).
+	// For Left/Right the split is TOP/BOTTOM (top = primary, bottom = secondary).
+	const splitIsLeftRight = direction === "up" || direction === "down";
+
+	// Build the flat list of LED squares across all sensors on this panel,
+	// in ledOffset order so they read naturally along the strip.
+	const allLeds: { index: number; color: string }[] = [];
+	for (const { sensor } of matches) {
+		for (let i = 0; i < sensor.ledCount; i++) {
+			allLeds.push({ index: sensor.ledOffset + i, color: sensor.color });
+		}
+	}
+	allLeds.sort((a, b) => a.index - b.index);
+
+	// LED strip orientation:
+	//   Up/Down arrows  → stem runs vertically in the image → strip goes HORIZONTAL
+	//   Left/Right arrows → stem runs horizontally → strip goes VERTICAL
+	const stripIsHorizontal = direction === "up" || direction === "down";
+
+	// Position the strip in the stem area of each arrow.
+	// The stem occupies roughly the center third of the panel.
+	// Up:    stem is in the lower ~55-80% vertically, centered horizontally
+	// Down:  stem is in the upper ~20-45% vertically, centered horizontally
+	// Left:  stem is in the right ~30-65% horizontally, centered vertically
+	// Right: stem is in the left ~35-65% horizontally, centered vertically
+	const stripPositionStyle: React.CSSProperties = (() => {
+		switch (direction) {
+			case "up":    return { bottom: "18%", left: "50%", transform: "translateX(-50%)" };
+			case "down":  return { top: "18%",    left: "50%", transform: "translateX(-50%)" };
+			case "left":  return { right: "14%",  top:  "50%", transform: "translateY(-50%)" };
+			case "right": return { left:  "14%",  top:  "50%", transform: "translateY(-50%)" };
+		}
+	})();
+
+	// Square size per LED — generous enough to read the number
+	const SQ = 16;
+	const GAP = 2;
+
 	return (
-		<button
-			type="button"
-			onClick={onClick}
-			disabled={!sensor}
-			className={`relative flex flex-col items-center justify-center gap-1 w-28 h-28 rounded-xl border-2 transition-all ${
-				sensor ? "cursor-pointer hover:brightness-110" : "cursor-not-allowed opacity-40"
-			} ${selected ? "ring-2 ring-offset-2 ring-offset-background ring-foreground" : ""}`}
-			style={{
-				background: "linear-gradient(160deg, #2a2a2e, #17171a)",
-				borderColor: sensor ? color : "#333",
-				boxShadow: sensor ? `0 0 14px -2px ${color}` : "none",
-			}}
-			title={sensor ? `${sensor.label || direction} -- #${sensor.sensorIndex}` : "Not configured"}
-		>
-			<span className="text-4xl leading-none" style={{ color: sensor ? color : "#555" }}>
-				{ARROW_GLYPH[direction]}
-			</span>
-			{sensor ? (
-				<div className="text-center leading-tight">
-					<div className="text-[10px] font-medium text-white/90">{sensor.label || direction}</div>
-					<div className="text-[9px] text-white/50">Off {sensor.ledOffset} · Cnt {sensor.ledCount}</div>
-				</div>
+		<div className="absolute inset-0 pointer-events-none" style={{ borderRadius: "inherit" }}>
+
+			{/* ── Hue tint layer(s) ───────────────────────────────────────── */}
+			{secondary ? (
+				<>
+					{/* Primary sensor: covers the left or top half */}
+					<div style={{
+						position: "absolute",
+						backgroundColor: primary.color,
+						mixBlendMode: "hue",
+						opacity: 0.92,
+						...(splitIsLeftRight
+							? { top: 0, bottom: 0, left: 0, right: "50%" }   // left half
+							: { left: 0, right: 0, top: 0, bottom: "50%" }), // top half
+					}} />
+					{/* Secondary sensor: covers the right or bottom half */}
+					<div style={{
+						position: "absolute",
+						backgroundColor: secondary.color,
+						mixBlendMode: "hue",
+						opacity: 0.92,
+						...(splitIsLeftRight
+							? { top: 0, bottom: 0, left: "50%", right: 0 }   // right half
+							: { left: 0, right: 0, top: "50%", bottom: 0 }), // bottom half
+					}} />
+				</>
 			) : (
-				<div className="text-[9px] text-white/40">Not set up</div>
+				/* Single sensor: full panel tint */
+				<div style={{
+					position: "absolute",
+					inset: 0,
+					backgroundColor: primary.color,
+					mixBlendMode: "hue",
+					opacity: 0.92,
+				}} />
 			)}
-		</button>
+
+			{/* ── LED strip ───────────────────────────────────────────────── */}
+			{allLeds.length > 0 && (
+				<div style={{
+					position: "absolute",
+					...stripPositionStyle,
+					display: "flex",
+					flexDirection: stripIsHorizontal ? "row" : "column",
+					gap: GAP,
+					alignItems: "center",
+					justifyContent: "center",
+				}}>
+					{allLeds.map(({ index, color }) => (
+						<div
+							key={index}
+							style={{
+								width: SQ,
+								height: SQ,
+								borderRadius: 3,
+								background: color,
+								border: "1.5px solid rgba(255,255,255,0.55)",
+								boxShadow: `0 0 5px 1px ${color}`,
+								display: "flex",
+								alignItems: "center",
+								justifyContent: "center",
+								flexShrink: 0,
+							}}
+						>
+							<span style={{
+								fontSize: 7,
+								fontFamily: "monospace",
+								color: "rgba(255,255,255,0.95)",
+								textShadow: "0 0 3px rgba(0,0,0,0.9), 0 1px 2px rgba(0,0,0,0.8)",
+								lineHeight: 1,
+								userSelect: "none",
+							}}>
+								{index}
+							</span>
+						</div>
+					))}
+				</div>
+			)}
+		</div>
 	);
 }
 
+function LedPadPreview() {
+	const [selectedDir, setSelectedDir] = useState<Direction | null>(null);
+	// When a direction has multiple FSRs, this holds the arrayIndex of the one
+	// the user picked to edit. null = not yet chosen (show picker).
+	const [selectedSensorIdx, setSelectedSensorIdx] = useState<number | null>(null);
+	const [imageError, setImageError] = useState(false);
+	const sensors = useSyncExternalStore(subscribeLedStore, getLedStoreSnapshot);
+	const controls = (LedSection as unknown as { _getLedControls?: () => LedControls })._getLedControls?.();
+
+	if (!controls) {
+		return <p className="text-sm text-muted-foreground p-4">Connect to your pad to preview its LED layout.</p>;
+	}
+	const { updateSensor } = controls;
+
+	// Find ALL sensors whose label contains the direction keyword (case-insensitive).
+	// "Up" matches "Up" and "Up 2"; "Down" matches "Down" and "Down 2", etc.
+	const findAllByDir = (dir: Direction): { sensor: SensorZone; arrayIndex: number }[] =>
+		sensors
+			.map((s, i) => ({ sensor: s, arrayIndex: i }))
+			.filter(({ sensor }) => sensor.label.trim().toLowerCase().includes(dir));
+
+	// Build panel info: first sensor for the arrow visual, plus full list for multi-FSR picker.
+	const panels: {
+		direction: Direction;
+		matches: { sensor: SensorZone; arrayIndex: number }[];
+		primarySensor: SensorZone | undefined;
+		totalLedCount: number;
+	}[] = (["up", "down", "left", "right"] as const).map((direction) => {
+		const matches = findAllByDir(direction);
+		const primarySensor = matches[0]?.sensor;
+		const totalLedCount = matches.reduce((sum, m) => sum + m.sensor.ledCount, 0);
+		return { direction, matches, primarySensor, totalLedCount };
+	});
+
+	const handlePanelClick = (direction: Direction, matches: { sensor: SensorZone; arrayIndex: number }[]) => {
+		if (selectedDir === direction) {
+			// Toggle off
+			setSelectedDir(null);
+			setSelectedSensorIdx(null);
+			return;
+		}
+		setSelectedDir(direction);
+		if (matches.length === 1) {
+			// Only one FSR on this panel — go straight to the edit card.
+			setSelectedSensorIdx(matches[0].arrayIndex);
+		} else {
+			// Multiple FSRs — show the picker first.
+			setSelectedSensorIdx(null);
+		}
+	};
+
+	// The sensor currently being edited in the card (if any).
+	const editingSensor = selectedSensorIdx !== null ? sensors[selectedSensorIdx] : undefined;
+
+	return (
+		<div className="flex flex-col items-center gap-6 p-4 overflow-y-auto">
+			<div className="relative w-full max-w-md aspect-square rounded-lg overflow-hidden border border-border bg-muted/20">
+				{!imageError ? (
+					<img
+						src={PAD_BACKGROUND_URL}
+						alt="Pad layout"
+						className="absolute inset-0 w-full h-full object-cover select-none"
+						draggable={false}
+						onError={() => setImageError(true)}
+					/>
+				) : (
+					<div className="absolute inset-0 flex items-center justify-center p-4 text-center">
+						<p className="text-xs text-muted-foreground">
+							Background image not found. Place your pad image in your project's
+							<code className="mx-1 px-1 rounded bg-muted">public/</code> folder as
+							<code className="mx-1 px-1 rounded bg-muted">pad-background.png</code>
+							(or update <code className="px-1 rounded bg-muted">PAD_BACKGROUND_URL</code> in
+							the code to match wherever you put it).
+						</p>
+					</div>
+				)}
+
+				{panels.map(({ direction, matches, primarySensor, totalLedCount }) => (
+					<button
+						key={direction}
+						type="button"
+						disabled={matches.length === 0}
+						onClick={() => handlePanelClick(direction, matches)}
+						className={`absolute w-1/3 h-1/3 transition-all overflow-hidden ${
+							matches.length > 0 ? "cursor-pointer" : "cursor-not-allowed"
+						} ${selectedDir === direction ? "ring-4 ring-inset ring-white/80" : ""}`}
+						style={{
+							top: PANEL_RECT[direction].top,
+							left: PANEL_RECT[direction].left,
+							position: "absolute",
+						}}
+						title={
+							matches.length > 1
+								? matches.map((m) => m.sensor.label).join(" + ")
+								: primarySensor
+									? `${primarySensor.label} — #${primarySensor.sensorIndex}`
+									: `No sensor labeled "${direction}"`
+						}
+					>
+						{matches.length > 0 ? (
+							<PanelTint
+								matches={matches}
+								direction={direction}
+							/>
+						) : (
+							<span className="absolute inset-0 flex items-center justify-center text-[10px] text-white/50">—</span>
+						)}
+					</button>
+				))}
+			</div>
+
+			{/* Multi-FSR picker: shown when a direction has 2+ sensors and no specific one chosen yet */}
+			{selectedDir !== null && (() => {
+				const panel = panels.find((p) => p.direction === selectedDir);
+				if (!panel || panel.matches.length <= 1) return null;
+				if (selectedSensorIdx !== null) return null;
+				return (
+					<div className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-card w-full max-w-sm">
+						<div className="flex items-center justify-between">
+							<h3 className="text-sm font-semibold capitalize">{selectedDir} — which FSR?</h3>
+							<button type="button" onClick={() => { setSelectedDir(null); setSelectedSensorIdx(null); }} className="text-xs text-muted-foreground hover:text-foreground">
+								Close
+							</button>
+						</div>
+						<p className="text-[11px] text-muted-foreground">
+							This panel has {panel.matches.length} FSR sensors. Pick one to edit:
+						</p>
+						<div className="flex flex-col gap-2">
+							{panel.matches.map(({ sensor, arrayIndex }) => (
+								<button
+									key={arrayIndex}
+									type="button"
+									onClick={() => setSelectedSensorIdx(arrayIndex)}
+									className="flex items-center gap-3 px-3 py-2 rounded border border-border hover:bg-accent hover:text-accent-foreground transition-colors text-left"
+								>
+									<span
+										className="w-4 h-4 rounded-full shrink-0 border border-black/30"
+										style={{ background: sensor.color, boxShadow: `0 0 4px ${sensor.color}` }}
+									/>
+									<div className="flex flex-col">
+										<span className="text-sm font-medium">{sensor.label}</span>
+										<span className="text-[10px] text-muted-foreground font-mono">
+											#{sensor.sensorIndex} · LEDs {sensor.ledOffset}–{sensor.ledOffset + sensor.ledCount - 1} ({sensor.ledCount} LEDs)
+										</span>
+									</div>
+								</button>
+							))}
+						</div>
+					</div>
+				);
+			})()}
+
+			{/* Edit card: shown once a specific sensor is selected */}
+			{editingSensor && selectedSensorIdx !== null && (
+				<div className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-card w-full max-w-sm">
+					<div className="flex items-center justify-between">
+						<h3 className="text-sm font-semibold capitalize">
+							{editingSensor.label} (#{editingSensor.sensorIndex})
+						</h3>
+						<div className="flex gap-2">
+							{/* Back to picker if there are multiple FSRs on this panel */}
+							{(() => {
+								const panel = panels.find((p) => p.direction === selectedDir);
+								return panel && panel.matches.length > 1 ? (
+									<button
+										type="button"
+										onClick={() => setSelectedSensorIdx(null)}
+										className="text-xs text-muted-foreground hover:text-foreground"
+									>
+										← Back
+									</button>
+								) : null;
+							})()}
+							<button type="button" onClick={() => { setSelectedDir(null); setSelectedSensorIdx(null); }} className="text-xs text-muted-foreground hover:text-foreground">
+								Close
+							</button>
+						</div>
+					</div>
+
+					<label className="flex flex-col gap-1 text-xs">
+						Color
+						<input
+							type="color"
+							value={editingSensor.color}
+							onChange={(e) => updateSensor(selectedSensorIdx, { color: e.target.value })}
+							className="h-9 w-full rounded border border-border cursor-pointer"
+						/>
+					</label>
+
+					<label className="flex flex-col gap-1 text-xs">
+						LED Offset
+						<input
+							type="number" min={0} max={255}
+							value={editingSensor.ledOffset}
+							onChange={(e) => updateSensor(selectedSensorIdx, { ledOffset: Math.max(0, Number(e.target.value) || 0) })}
+							className="px-2 py-1 rounded border border-border bg-transparent text-sm"
+						/>
+					</label>
+
+					<label className="flex flex-col gap-1 text-xs">
+						LED Count
+						<input
+							type="number" min={1} max={64}
+							value={editingSensor.ledCount}
+							onChange={(e) => updateSensor(selectedSensorIdx, { ledCount: Math.max(1, Number(e.target.value) || 1) })}
+							className="px-2 py-1 rounded border border-border bg-transparent text-sm"
+						/>
+					</label>
+
+					<p className="text-[10px] text-muted-foreground">
+						Changes here push to the board immediately, the same as editing this
+						sensor in the LED Panels list in the sidebar.
+					</p>
+				</div>
+			)}
+
+			{panels.some((p) => p.matches.length === 0) && (
+				<p className="text-xs text-muted-foreground text-center max-w-sm">
+					Grayed-out panels don't have a sensor labeled "Up", "Down", "Left",
+					or "Right" yet — rename one in the LED Panels list (sidebar) to match.
+				</p>
+			)}
+		</div>
+	);
+}
 
 const Dashboard = () => {
 	const colorSettings = useColorSettings();
@@ -1965,8 +2358,33 @@ const Dashboard = () => {
 	const updateProfileStable = useStableCallback(updateProfile);
 	const setActiveProfileByIdStable = useStableCallback(setActiveProfileById);
 	const resetProfileToDefaultsStable = useStableCallback(resetProfileToDefaults);
+	// Three-way theme cycle: light → dark → animus → light
+	// Animus mode is tracked independently so it can be layered on top of the
+	// existing useTheme system (which only knows light/dark). When animus is
+	// active we force the underlying theme to "dark" so Tailwind's dark:
+	// classes render correctly, then our CSS variable overrides finish the job.
+	const LS_ANIMUS_KEY = "webfsr_animus_theme";
+	const [animusTheme, setAnimusTheme] = useState<boolean>(() => {
+		try { return localStorage.getItem(LS_ANIMUS_KEY) === "true"; } catch { return false; }
+	});
+
+	// Keep underlying dark mode in sync with animus state
+	useEffect(() => {
+		if (animusTheme) setTheme("dark");
+	}, [animusTheme]);
+
 	const toggleTheme = useStableCallback(() => {
-		setTheme(resolvedTheme === "dark" ? "light" : "dark");
+		if (resolvedTheme === "light" && !animusTheme) {
+			setTheme("dark");
+		} else if (resolvedTheme === "dark" && !animusTheme) {
+			setAnimusTheme(true);
+			try { localStorage.setItem(LS_ANIMUS_KEY, "true"); } catch {}
+		} else {
+			// animus → back to light
+			setAnimusTheme(false);
+			try { localStorage.setItem(LS_ANIMUS_KEY, "false"); } catch {}
+			setTheme("light");
+		}
 	});
 
 	const [thresholds, setThresholds] = useState<number[]>([]);
@@ -2020,7 +2438,7 @@ const Dashboard = () => {
 	// that legacy command -- otherwise it silently undoes the Advanced
 	// tuning the moment the main page is touched.
 	const [advancedTuningEnabled, setAdvancedTuningEnabled] = useState<boolean>(loadAdvancedMode);
-
+	const [mainTab, setMainTab] = useState<"sensors" | "leds">("sensors");
 	const toggleAdvancedTuningMode = useStableCallback(() => {
 		const next = !advancedTuningEnabled;
 		setAdvancedTuningEnabled(next);
@@ -2056,7 +2474,7 @@ const Dashboard = () => {
 	const isMobile = useIsMobile();
 
 	const [devHideOverlay, setDevHideOverlay] = useState<boolean>(import.meta.env.DEV);
-
+	
 	useEffect(() => {
 		setobsPassword(activeProfile?.obsPassword ?? "");
 	}, [activeProfile?.obsPassword]);
@@ -2552,7 +2970,102 @@ const Dashboard = () => {
 	}
 
 	return (
-		<main className="grid grid-cols-[17rem_1fr] h-screen w-screen bg-background text-foreground overflow-hidden">
+		<main className={`grid grid-cols-[17rem_1fr] h-screen w-screen bg-background text-foreground overflow-hidden${animusTheme ? " theme-animus" : ""}`}>
+		{animusTheme && (
+			<style>{`
+				.theme-animus {
+					/* Deep dark teal-black base */
+					--background:        8 18 16;
+					--foreground:        210 255 245;
+					--card:              10 24 20;
+					--card-foreground:   210 255 245;
+					--popover:           8 20 17;
+					--popover-foreground:210 255 245;
+
+					/* Gold primary — buttons, active states */
+					--primary:           201 162 39;
+					--primary-foreground:8 18 16;
+
+					/* Teal secondary */
+					--secondary:         0 60 50;
+					--secondary-foreground:0 229 204;
+
+					/* Muted — slightly brighter than bg so panels read */
+					--muted:             12 30 25;
+					--muted-foreground:  120 190 175;
+
+					/* Teal accent */
+					--accent:            0 45 38;
+					--accent-foreground: 0 229 204;
+
+					/* Border — subtle gold tint */
+					--border:            40 65 55;
+					--input:             12 28 23;
+					--ring:              201 162 39;
+
+					/* Destructive stays red */
+					--destructive:       220 50 50;
+					--destructive-foreground:255 255 255;
+
+					--radius: 0.5rem;
+				}
+
+				/* Sidebar */
+				.theme-animus .border-r {
+					background: rgb(6 14 12) !important;
+					border-color: rgb(40 65 55) !important;
+				}
+
+				/* Panels / cards */
+				.theme-animus .bg-white,
+				.theme-animus .dark\\:bg-neutral-900,
+				.theme-animus .dark\\:bg-neutral-950 {
+					background-color: rgb(10 24 20) !important;
+				}
+
+				/* Borders */
+				.theme-animus .border,
+				.theme-animus .border-border {
+					border-color: rgb(40 65 55) !important;
+				}
+
+				/* Gold glow on focused inputs */
+				.theme-animus input:focus,
+				.theme-animus select:focus {
+					outline: none;
+					box-shadow: 0 0 0 2px rgba(201,162,39,0.45);
+				}
+
+				/* Tab active underline — gold */
+				.theme-animus .border-foreground {
+					border-color: #C9A227 !important;
+					color: #C9A227 !important;
+				}
+
+				/* Scrollbar */
+				.theme-animus ::-webkit-scrollbar-track { background: rgb(8 18 16); }
+				.theme-animus ::-webkit-scrollbar-thumb { background: rgb(40 65 55); border-radius: 4px; }
+				.theme-animus ::-webkit-scrollbar-thumb:hover { background: #C9A227; }
+
+				/* Sensor bars base bg */
+				.theme-animus .bg-muted { background-color: rgb(12 30 25) !important; }
+
+				/* Button primary style override for gold feel */
+				.theme-animus button[class*="bg-primary"],
+				.theme-animus [class*="bg-primary"] {
+					background-color: #C9A227 !important;
+					color: rgb(8 18 16) !important;
+				}
+
+				/* Subtle circuit-board background pattern on the main content area */
+				.theme-animus > div:last-child {
+					background-image:
+						linear-gradient(rgba(0,229,204,0.03) 1px, transparent 1px),
+						linear-gradient(90deg, rgba(0,229,204,0.03) 1px, transparent 1px);
+					background-size: 32px 32px;
+				}
+			`}</style>
+		)}
 			{/* Sidebar */}
 			<div className="border-r border-border bg-gray-100 dark:bg-neutral-950 overflow-hidden">
 				<div className="h-full w-full grid grid-rows-[auto_1fr]">
@@ -2572,7 +3085,7 @@ const Dashboard = () => {
 								</TooltipTrigger>
 								<TooltipContent side="right" className="max-w-48">
 									{canInstall ? (
-										<p>Install WebFSR as an app</p>
+										<p>Install Awakened Animus as an app</p>
 									) : showIOSInstall ? (
 										<p>
 											Install as an app: tap <Share className="size-3 inline mx-0.5" /> then "Add to Home Screen"
@@ -2583,9 +3096,53 @@ const Dashboard = () => {
 						) : (
 							<div className="size-8 shrink-0" />
 						)}
-						<h2 className="text-xl font-bold flex-1 text-center">WebFSR</h2>
-						<Button variant="ghost" size="icon" className="size-8 shrink-0" onClick={toggleTheme} aria-label="Toggle theme">
-							{resolvedTheme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
+						<h2 className="text-xl font-bold flex-1 text-center leading-tight select-none" style={{ lineHeight: 1.15 }}>
+							<span style={{
+								background: "linear-gradient(135deg, #C9A227 0%, #F0CC55 40%, #00E5CC 75%, #00BFAA 100%)",
+								WebkitBackgroundClip: "text",
+								WebkitTextFillColor: "transparent",
+								backgroundClip: "text",
+								fontWeight: 800,
+								letterSpacing: "0.01em",
+								display: "block",
+								fontSize: "0.78rem",
+								textTransform: "uppercase",
+								opacity: 0.85,
+							}}>Awakened</span>
+							<span style={{
+								background: "linear-gradient(135deg, #C9A227 0%, #E8B830 35%, #00E5CC 70%, #00BFAA 100%)",
+								WebkitBackgroundClip: "text",
+								WebkitTextFillColor: "transparent",
+								backgroundClip: "text",
+								fontWeight: 900,
+								letterSpacing: "0.12em",
+								display: "block",
+								fontSize: "1.15rem",
+								textTransform: "uppercase",
+								textShadow: "none",
+								filter: "drop-shadow(0 0 6px rgba(0,229,204,0.35))",
+							}}>Animus</span>
+						</h2>
+						<Button
+							variant="ghost"
+							size="icon"
+							className="size-8 shrink-0"
+							onClick={toggleTheme}
+							aria-label={animusTheme ? "Switch to Light mode" : resolvedTheme === "dark" ? "Switch to Animus mode" : "Switch to Dark mode"}
+							title={animusTheme ? "Animus theme — click for Light" : resolvedTheme === "dark" ? "Dark theme — click for Animus" : "Light theme — click for Dark"}
+						>
+							{animusTheme ? (
+								/* Animus icon: a small crystal/gem shape in teal+gold */
+								<svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
+									<polygon points="12,2 20,8 17,20 7,20 4,8" fill="rgba(0,229,204,0.18)" stroke="#C9A227" strokeWidth={1.5}/>
+									<polygon points="12,5 17,9 15,18 9,18 7,9" fill="rgba(0,229,204,0.35)" stroke="rgba(0,229,204,0.8)" strokeWidth={1}/>
+									<line x1="12" y1="2" x2="12" y2="22" stroke="rgba(0,229,204,0.5)" strokeWidth={0.8}/>
+								</svg>
+							) : resolvedTheme === "dark" ? (
+								<Sun className="size-4" />
+							) : (
+								<Moon className="size-4" />
+							)}
 						</Button>
 					</div>
 
@@ -2651,6 +3208,7 @@ const Dashboard = () => {
 								thresholds={thresholds}
 								displayOrder={effectiveDisplayOrder}
 								moveDisplayPosition={moveDisplayPosition}
+								numSensors={numSensors}
 							/>
 
 							{/* ── SENSOR TUNING SECTION ──
@@ -2745,9 +3303,9 @@ const Dashboard = () => {
 									size="sm"
 									className="text-xs text-muted-foreground"
 									onClick={() => setAboutOpen(true)}
-									aria-label="About WebFSR"
+									aria-label="About Awakened Animus"
 								>
-									About WebFSR
+									About Awakened Animus
 								</Button>
 								<span className="text-[10px] text-muted-foreground font-mono opacity-70 break-all text-center">
 									{__BUILD_TIMESTAMP__}
@@ -2761,12 +3319,42 @@ const Dashboard = () => {
 			{/* Main content */}
 			<div className="h-full overflow-hidden">
 				<div className="h-full flex flex-col overflow-hidden p-2 relative">
-					{latestData ? (
+					{/* ── TOP TAB BAR ── */}
+					<div className="shrink-0 mb-2 flex items-center gap-1 border-b border-border">
+						<button
+							type="button"
+							onClick={() => setMainTab("sensors")}
+							className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+								mainTab === "sensors"
+									? "border-foreground text-foreground"
+									: "border-transparent text-muted-foreground hover:text-foreground"
+							}`}
+						>
+							Sensors
+						</button>
+						<button
+							type="button"
+							onClick={() => setMainTab("leds")}
+							className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+								mainTab === "leds"
+									? "border-foreground text-foreground"
+									: "border-transparent text-muted-foreground hover:text-foreground"
+							}`}
+						>
+							LEDs
+						</button>
+					</div>
+
+					{mainTab === "leds" ? (
+						<LedPadPreview />
+					) : (
 					<>
-						{/* ── SENSOR TUNING TOGGLE -- a simple button, not the full
-						    panel (that stays in the sidebar). Flips the same
-						    advancedTuningEnabled flag the sidebar's own toggle
-						    controls. ── */}
+					{latestData ? (
+						<>
+							{/* ── SENSOR TUNING TOGGLE -- a simple button, not the full
+							    panel (that stays in the sidebar). Flips the same
+							    advancedTuningEnabled flag the sidebar's own toggle
+							    controls. ── */}
 							<div className="shrink-0 mb-2 flex items-center gap-2">
 								<Button
 									variant={advancedTuningEnabled ? "default" : "outline"}
@@ -2951,8 +3539,10 @@ const Dashboard = () => {
 									)}
 								</div>
 							)}
+						</>
+					)}
 					</>
-				)}
+					)}
 				</div>
 			</div>
 
