@@ -1846,7 +1846,7 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
  IMAGE SETUP REQUIRED: place your pad background image in your project's
  public/ folder named to match PAD_BACKGROUND_URL below.
 =============================================================================*/
-const PAD_BACKGROUND_URL = "/pad-background.png";
+const PAD_BACKGROUND_URL = `${import.meta.env.BASE_URL}pad-background.png`;
 
 type Direction = "up" | "down" | "left" | "right";
 
