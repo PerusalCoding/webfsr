@@ -6,7 +6,7 @@
 
 <div align="center">
   <h3 style="border-bottom: none;">
-    Web client for managing custom FSR dance pads running the <a href="https://github.com/PerusalCoding/webfsr/tree/main/Fsr_Public%20Ino%20file">teejusb FSR firmware</a>.
+    Web client and companion control panel for custom FSR dance pads running the <b>Awakened Animus Firmware</b> (custom fork of <a href="https://github.com/teejusb/fsr">teejusb FSR firmware</a>).
   </h3>
 </div>
 
@@ -24,6 +24,7 @@
 - **OBS Browser Source Integration:** Dedicated websocket server links to stream sensor bars, live graphs, or heart rate monitoring directly into OBS.
 - **External Device Control:** Pair mobile devices via peer-to-peer WebRTC to tweak thresholds on the fly.
 - **Installable PWA & Profile Support:** Save profiles locally using IndexedDB and run as a standalone desktop app.
+- **Microcontroller Integration:** Connect directly over WebSerial to tune pads running the custom [Awakened Animus Firmware](./Fsr_Public%20Ino%20file).
 
 ## Screenshots
 

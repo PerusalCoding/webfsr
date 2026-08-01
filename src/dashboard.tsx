@@ -1305,7 +1305,7 @@ interface FirmwareManifest {
 }
 
 // Fill this in with your actual GitHub repo.
-const GITHUB_REPO = "yourusername/yourrepo"; // e.g. "PerusalCoding/webfsr"
+const GITHUB_REPO = "PerusalCoding/webfsr"; // e.g. "PerusalCoding/webfsr"
 
 // Minimal slice of GitHub's Releases API response we actually use.
 // Full shape: https://docs.github.com/en/rest/releases/releases#get-the-latest-release
@@ -1846,7 +1846,7 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
  IMAGE SETUP REQUIRED: place your pad background image in your project's
  public/ folder named to match PAD_BACKGROUND_URL below.
 =============================================================================*/
-const PAD_BACKGROUND_URL = `${import.meta.env.BASE_URL}pad-background.png`;
+const PAD_BACKGROUND_URL = "/pad-background.png";
 
 type Direction = "up" | "down" | "left" | "right";
 
