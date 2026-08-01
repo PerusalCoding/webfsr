@@ -1,28 +1,37 @@
 <div align="center">
-  <h1 style="border-bottom: none;">WebFSR - <a href="https://webfsr.com">webfsr.com</a></h1>
+  <h1 style="border-bottom: none;">
+    <a href="https://perusalcoding.github.io/webfsr/">Awakened Animus - WebFSR</a>
+  </h1>
 </div>
 
 <div align="center">
   <h3 style="border-bottom: none;">
-    Web client for managing FSR pads running the <a href="https://github.com/teejusb/fsr">teejusb FSR firmware</a>.
+    Web client for managing custom FSR dance pads running the <a href="https://github.com/PerusalCoding/webfsr/tree/main/Fsr_Public%20Ino%20file">teejusb FSR firmware</a>.
   </h3>
 </div>
 
 ## Features
 
-- Connect directly to the microcontroller using WebSerial (requires a Chromium-based browser).
-- View current sensor data and adjust thresholds.
-- Settings to adjust the visuals of the sensor bars and the time series graph.
-- Automatically save all settings and threshold values to profiles, stored using IndexedDB.
-- Display heartrate monitor data using WebBluetooth.
-- Installable as a PWA, allowing it to run in a dedicated window and offline.
-- OBS Browser Source components of each visualization to display in recordings or streams.
-- Light and dark mode.
-- Control thresholds from an external mobile device.
+- **Advanced Sensor Tuning:**
+  - Dual-threshold **Trigger** (red line) and **Release** (green line) adjustments with lockable release toggles.
+  - Per-sensor **Gain** and **Debounce** rate fine-tuning.
+  - **Sensor Grouping** to assign individual FSRs to share or map to specific pad buttons.
+- **Custom LED Panels & Lighting:**
+  - Dedicated **LEDs tab** to configure panel lighting, arrow counts, and custom LED mapping.
+  - Automatic arrow pairing: naming a secondary FSR with a `2` (e.g., `Up 2`, `Left 2`) automatically maps it to the primary arrow panel for dynamic Hue shifts and color changes.
+  - Preset support for **Default 4**, **Default 6**, **DDR**, **Fire**, and **Ice** presets, plus custom preset creation and pad sync.
+- **Microcontroller Integration:** Connect directly to your pad over WebSerial (requires a Chromium-based browser).
+- **OBS Browser Source Integration:** Dedicated websocket server links to stream sensor bars, live graphs, or heart rate monitoring directly into OBS.
+- **External Device Control:** Pair mobile devices via peer-to-peer WebRTC to tweak thresholds on the fly.
+- **Installable PWA & Profile Support:** Save profiles locally using IndexedDB and run as a standalone desktop app.
 
-## Screenshot
+## Screenshots
 
-<img src="./screenshot.png" alt="WebFSR screenshot" />
+### Sensor Tuning
+<img src="./screenshot.png" alt="Awakened Animus Sensor Tuning" />
+
+### LED Panel & Arrow Mapping
+<img src="./screenshot-leds.png" alt="Awakened Animus LED Configuration" />
 
 ## PWA Installation
 
@@ -30,7 +39,7 @@ WebFSR is installable as a PWA. This will allow you to run it offline and in a s
 
 To install it as a PWA, find a button in the top-right corner of your browser which says "Install WebFSR":
 
-<img src="./pwa.png" alt="Install WebFSR as PWA button" />
+<img src="./pwa.png" alt="Install Awakened Animus as PWA button" />
 
 ## Managing thresholds from an external device
 
@@ -72,6 +81,7 @@ List of the current routes:
    - Send real-time theme data to the client. This would allow for more in-depth statistical analysis which would support in pad debugging. For example, each miss can be sent to the client, connecting a miss in game with a specific sensor value.
    - This would be accomplished with a websocket server running locally on the machine, which will receive data from a theme module and pass it along to the client.
 - Import profiles saved from teejusb FSR web UI.
+
 ## Development
 
 ### Prerequisites
@@ -84,8 +94,3 @@ List of the current routes:
 2. Install dependencies:
 ```bash
 pnpm install
-```
-3. Run the dev server:
-```bash
-pnpm dev
-```
