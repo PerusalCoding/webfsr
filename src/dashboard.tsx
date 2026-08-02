@@ -826,7 +826,44 @@ interface SensorTuning {
 	                          // metal pad panel). 0 = instant release.
 }
 
+// Scopes a localStorage base key to a specific physical board, when known.
+// deviceId is the uppercase hex chip ID reported by newer firmware's "i"
+// command (see PrintUniqueChipId() in the firmware sketch). When null
+// (older firmware, or no board connected yet), falls back to the plain
+// unscoped key -- this is what every persisted setting used before
+// per-device scoping existed, so it's also what a single-pad user with
+// unupdated firmware continues to see, unchanged.
+function scopedKey(base: string, deviceId: string | null): string {
+	return deviceId ? `${base}:${deviceId}` : base;
+}
+
 const LS_TUNING_KEY = "webfsr_sensor_tuning_v3";
+
+// "Lock Release to Trigger" per-sensor toggle (main-page bar controls,
+// separate from the sidebar's tuning array) -- was previously plain
+// useState with no persistence at all, so it silently reset to "off" for
+// every sensor on any reload, reconnect, or navigation. Given its own
+// small localStorage key rather than folding it into SensorTuning, since
+// it lives in the Dashboard component, not SensorTuningSection.
+const LS_RELEASE_LOCKED_KEY = "webfsr_release_locked_v1";
+function loadReleaseLocked(deviceId: string | null): Record<number, boolean> {
+	try {
+		const raw = localStorage.getItem(scopedKey(LS_RELEASE_LOCKED_KEY, deviceId));
+		if (!raw) return {};
+		const parsed = JSON.parse(raw);
+		return typeof parsed === "object" && parsed !== null ? parsed : {};
+	} catch {
+		return {};
+	}
+}
+function saveReleaseLocked(next: Record<number, boolean>, deviceId: string | null) {
+	try {
+		localStorage.setItem(scopedKey(LS_RELEASE_LOCKED_KEY, deviceId), JSON.stringify(next));
+	} catch {
+		// Storage full/unavailable -- not persisting is a minor UX
+		// regression, not worth surfacing an error for.
+	}
+}
 
 // ── Tuning external store ───────────────────────────────────────────────
 // See the matching comment in the personal/dev dashboard build for the
@@ -866,9 +903,9 @@ function getLedStoreSnapshot() {
 	return ledStoreSnapshot;
 }
 
-function loadTuning(count: number): SensorTuning[] {
+function loadTuning(count: number, deviceId: string | null): SensorTuning[] {
 	try {
-		const raw = localStorage.getItem(LS_TUNING_KEY);
+		const raw = localStorage.getItem(scopedKey(LS_TUNING_KEY, deviceId));
 		const saved = raw ? (JSON.parse(raw) as SensorTuning[]) : null;
 		if (saved && saved.length > 0) {
 			// Never truncate saved data on load, even if `count` (which can
@@ -890,8 +927,8 @@ function loadTuning(count: number): SensorTuning[] {
 		trigger: 700, release: 300, gainX100: 100, buttonGroup: i, releaseDebounceMs: 15,
 	}));
 }
-function saveTuning(t: SensorTuning[]) {
-	localStorage.setItem(LS_TUNING_KEY, JSON.stringify(t));
+function saveTuning(t: SensorTuning[], deviceId: string | null) {
+	localStorage.setItem(scopedKey(LS_TUNING_KEY, deviceId), JSON.stringify(t));
 }
 
 interface SensorTuningSectionProps {
@@ -911,6 +948,10 @@ interface SensorTuningSectionProps {
 	onTuningValuesChange?: (triggers: number[], releases: number[]) => void;
 	displayOrder: number[];
 	moveDisplayPosition: (fromPos: number, toPos: number) => void;
+	// Uppercase hex chip ID of the connected board, or null -- see the
+	// matching comment on Dashboard's deviceId state. Used to load/save
+	// `tuning` under a per-board key instead of one shared globally.
+	deviceId: string | null;
 }
 
 const LS_ADVANCED_MODE_KEY = "webfsr_advanced_tuning_enabled";
@@ -937,12 +978,30 @@ function SensorTuningSection({
 	onTuningValuesChange,
 	displayOrder,
 	moveDisplayPosition,
+	deviceId,
 }: SensorTuningSectionProps) {
 	const effectiveCount = numSensors > 0 ? numSensors : 4;
-	const [tuning, setTuning] = useState<SensorTuning[]>(() => loadTuning(effectiveCount));
+	const [tuning, setTuning] = useState<SensorTuning[]>(() => loadTuning(effectiveCount, deviceId));
 	const [tuningOpen, setTuningOpen] = useState<boolean>(false);
 	const tuningDrag = useRowDragReorder(moveDisplayPosition);
 	const [expandedSensor, setExpandedSensor] = useState<number | null>(null);
+
+	// deviceId arrives asynchronously (only known once the identify
+	// response comes back after connecting), so the useState initializer
+	// above ran with whatever deviceId was at mount -- almost always null
+	// the very first time. Re-load once the real board ID is known so
+	// this board's own saved tuning is picked up instead of staying on
+	// whatever the unscoped/previous-board fallback loaded. Intentionally
+	// does NOT fire on every reconnect of the SAME board (deviceId
+	// unchanged -> effect doesn't re-run), so it won't fight with the
+	// live "p" responses already keeping `tuning` in sync with the
+	// firmware in the meantime.
+	const prevDeviceIdRef = useRef<string | null>(deviceId);
+	useEffect(() => {
+		if (deviceId === prevDeviceIdRef.current) return;
+		prevDeviceIdRef.current = deviceId;
+		setTuning(loadTuning(effectiveCount, deviceId));
+	}, [deviceId]);
 
 	const toggleAdvancedMode = onToggleAdvancedMode;
 
@@ -977,7 +1036,7 @@ function SensorTuningSection({
 				tuning[i] ?? { trigger: 700, release: 300, gainX100: 100, buttonGroup: i, releaseDebounceMs: 15 }
 			);
 			setTuning(next);
-			saveTuning(next);
+			saveTuning(next, deviceId);
 		}
 	}, [numSensors]);
 
@@ -999,7 +1058,7 @@ function SensorTuningSection({
 			if (sensor < 0 || sensor >= prev.length) return prev;
 			const updated = [...prev];
 			updated[sensor] = { trigger, release, gainX100: gain, buttonGroup, releaseDebounceMs };
-			saveTuning(updated);
+			saveTuning(updated, deviceId);
 			return updated;
 		});
 		return true;
@@ -1046,7 +1105,7 @@ function SensorTuningSection({
 	const updateTuning = (i: number, patch: Partial<SensorTuning>) => {
 		const updated = tuning.map((t, idx) => idx === i ? { ...t, ...patch } : t);
 		setTuning(updated);
-		saveTuning(updated);
+		saveTuning(updated, deviceId);
 	};
 
 	const commitTrigger = (i: number, val: number) => { updateTuning(i, { trigger: val }); sendTrigger(i, val); };
@@ -1368,6 +1427,14 @@ interface FirmwareUpdateSectionProps {
 	sendText: (text: string) => void;
 	connect: () => void;
 	disconnect: () => void;
+	// Fires whenever the identify response's chip ID field changes (a new
+	// value on connect, or null on disconnect/for older firmware that
+	// doesn't send one). Lets Dashboard scope localStorage-persisted
+	// settings (Advanced Tuning, Lock Release to Trigger, etc.) per
+	// physical board, so two pads connected at once on different COM
+	// ports stop clobbering each other's saved settings -- see the
+	// matching comment on PrintUniqueChipId() in the firmware sketch.
+	onDeviceIdChange?: (deviceId: string | null) => void;
 }
 
 // Minimal shape of what preload.cjs exposes for firmware flashing. Declared
@@ -1382,7 +1449,7 @@ declare global {
 	interface Window { electronAPI?: WebFsrElectronAPI; }
 }
 
-function FirmwareUpdateSection({ connected, sendText, connect, disconnect }: FirmwareUpdateSectionProps) {
+function FirmwareUpdateSection({ connected, sendText, connect, disconnect, onDeviceIdChange }: FirmwareUpdateSectionProps) {
 	const [currentVersion, setCurrentVersion] = useState<string | null>(null);
 	const [currentSchema, setCurrentSchema] = useState<string | null>(null);
 	const [manifest, setManifest] = useState<FirmwareManifest | null>(null);
@@ -1400,20 +1467,33 @@ function FirmwareUpdateSection({ connected, sendText, connect, disconnect }: Fir
 	const [flashSucceeded, setFlashSucceeded] = useState(false);
 	const [awaitingReconnect, setAwaitingReconnect] = useState(false);
 
-	// Parse "i <version> <schema_hex> <num_sensors>" identify responses.
+	// Parse "i <version> <schema_hex> <num_sensors> <chip_id_hex>" identify
+	// responses. <chip_id_hex> is a newer field -- older firmware only
+	// sends the first 3 fields, in which case deviceId is reported as
+	// null and callers fall back to their previous (unscoped) behavior.
 	const handleIdentifyLine = (line: string) => {
 		if (!line.startsWith("i ")) return false;
 		const parts = line.slice(2).trim().split(/\s+/);
 		if (parts.length < 2) return false;
 		setCurrentVersion(parts[0]);
 		setCurrentSchema(parts[1].toUpperCase());
+		onDeviceIdChange?.(parts.length >= 4 ? parts[3].toUpperCase() : null);
 		return true;
 	};
 	(FirmwareUpdateSection as unknown as { _handleLine: (l: string) => boolean })._handleLine = handleIdentifyLine;
 
 	// Ask the board to identify itself once connected.
 	useEffect(() => {
-		if (connected) sendText("i\n");
+		if (connected) {
+			sendText("i\n");
+		} else {
+			// Disconnected -- this board's ID no longer applies. Cleared
+			// explicitly rather than left stale, since a stale deviceId
+			// left over from the last board could cause the NEXT board
+			// connected (if identify hasn't responded yet) to briefly read/
+			// write under the wrong board's scoped keys.
+			onDeviceIdChange?.(null);
+		}
 	}, [connected]);
 
 	// After a successful flash, WebSerial requires a genuine user click to
@@ -1846,7 +1926,7 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
  IMAGE SETUP REQUIRED: place your pad background image in your project's
  public/ folder named to match PAD_BACKGROUND_URL below.
 =============================================================================*/
-const PAD_BACKGROUND_URL = "/pad-background.png";
+const PAD_BACKGROUND_URL = "./pad-background.png"; // relative -- must match vite.config.ts's base: "./" so this still resolves once loaded via file:// in the packaged Electron app, not just the dev server
 
 type Direction = "up" | "down" | "left" | "right";
 
@@ -2231,6 +2311,20 @@ function LedPadPreview() {
 }
 
 const Dashboard = () => {
+	// Uppercase hex chip ID reported by the connected board's identify
+	// response (null if disconnected, or if the board's firmware predates
+	// this field). Declared early (before useProfileManager below) since
+	// it needs to be passed in there to scope which profile is "active"
+	// per physical board -- see the matching comment on
+	// FirmwareUpdateSectionProps.onDeviceIdChange, PrintUniqueChipId() in
+	// the firmware sketch, and scopedSettingsKey() in useProfileManager.
+	// Also used further down to scope Advanced Tuning and Lock Release to
+	// Trigger. Without this, two pads connected to the same computer on
+	// different COM ports/tabs would silently share (and clobber) each
+	// other's saved settings and active profile.
+	const [deviceId, setDeviceId] = useState<string | null>(null);
+	const onDeviceIdChangeStable = useStableCallback((id: string | null) => setDeviceId(id));
+
 	const colorSettings = useColorSettings();
 	const barSettings = useBarVisualizationSettings();
 	const graphSettings = useGraphVisualizationSettings();
@@ -2342,7 +2436,7 @@ const Dashboard = () => {
 		updateThresholds,
 		updateSensorLabels,
 		updateDisplayOrder,
-	} = useProfileManager();
+	} = useProfileManager(deviceId);
 
 	const { resolvedTheme, setTheme } = useTheme();
 
@@ -2454,8 +2548,33 @@ const Dashboard = () => {
 	// Per-sensor "lock Release to Trigger" toggle -- see the matching
 	// comment in the personal/dev build for the full reasoning. Purely
 	// dashboard-side; the firmware still just receives independent "y"/
-	// "r" commands as always.
-	const [releaseLocked, setReleaseLocked] = useState<Record<number, boolean>>({});
+	// "r" commands as always. Now persisted via loadReleaseLocked/
+	// saveReleaseLocked (localStorage), scoped per physical board via
+	// deviceId -- previously this was plain useState with nothing
+	// backing it, so it silently reset to "off" for every sensor on any
+	// reload, reconnect, or navigation away and back; and before the
+	// per-device scoping added here, it was also a single shared key
+	// that two pads connected at once would silently clobber.
+	const [releaseLocked, setReleaseLockedState] = useState<Record<number, boolean>>(() => loadReleaseLocked(deviceId));
+	const setReleaseLocked = useStableCallback(
+		(updater: (prev: Record<number, boolean>) => Record<number, boolean>) => {
+			setReleaseLockedState((prev) => {
+				const next = updater(prev);
+				saveReleaseLocked(next, deviceId);
+				return next;
+			});
+		},
+	);
+	// Same reload-on-real-deviceId-change reasoning as SensorTuningSection's
+	// tuning reload -- deviceId is only known after the async identify
+	// response, so the useState initializer above almost always ran with
+	// null at mount.
+	const prevReleaseLockedDeviceIdRef = useRef<string | null>(deviceId);
+	useEffect(() => {
+		if (deviceId === prevReleaseLockedDeviceIdRef.current) return;
+		prevReleaseLockedDeviceIdRef.current = deviceId;
+		setReleaseLockedState(loadReleaseLocked(deviceId));
+	}, [deviceId]);
 	const onTuningValuesChangeStable = useStableCallback((triggers: number[], releases: number[]) => {
 		setLiveTriggerValues(triggers);
 		setLiveReleaseValues(releases);
@@ -2637,6 +2756,18 @@ const Dashboard = () => {
 	});
 
 	const sendAllThresholds = () => {
+		// Advanced Tuning owns trigger/release entirely through its own "y"/
+		// "r" commands and EEPROM-persisted state -- the legacy single-
+		// threshold model below is only meaningful when Advanced mode is
+		// off. Sending it while Advanced is on used to silently clobber a
+		// correctly-tuned trigger with whatever was left sitting in the
+		// (possibly stale, possibly still-default) `thresholds` array,
+		// every single time the pad connected or the active profile
+		// changed -- this is what caused Advanced Tuning values to appear
+		// to "reset to 512" even though nothing about the actual tuning
+		// had changed; the firmware's real value was being overwritten
+		// out from under it.
+		if (advancedTuningEnabled) return;
 		if (!connected || !thresholds.length) return;
 
 		thresholds.forEach((value, index) => {
@@ -2647,11 +2778,11 @@ const Dashboard = () => {
 
 	useEffect(() => {
 		if (connected) sendAllThresholds();
-	}, [connected]);
+	}, [connected, advancedTuningEnabled]);
 
 	useEffect(() => {
 		if (activeProfileId && connected) sendAllThresholds();
-	}, [activeProfileId, connected]);
+	}, [activeProfileId, connected, advancedTuningEnabled]);
 
 	const syncUIStateWithProfile = (profile: ProfileData) => {
 		if (!profile) return;
@@ -2686,9 +2817,25 @@ const Dashboard = () => {
 		if (profile.thresholds.length > 0) {
 			setThresholds(profile.thresholds);
 		} else if (numSensors > 0) {
+			// Only used for the DISPLAY fallback (and only relevant while
+			// Advanced Tuning is off, since sendAllThresholds now skips
+			// entirely while it's on -- see the comment there). Deliberately
+			// NOT persisted back into the profile via updateThresholds:
+			// doing so used to permanently bake a synthesized "512 for
+			// every sensor" into any profile that had simply never touched
+			// the legacy threshold model (e.g. an Advanced-Tuning-only
+			// profile), so just switching to that profile once was enough
+			// to corrupt it -- from then on `profile.thresholds.length > 0`
+			// would be true, `sendAllThresholds` would treat 512 as
+			// legitimate saved data, and (before the sendAllThresholds fix
+			// above) it would get pushed to the firmware, overwriting the
+			// real tuned values. Leaving the profile's thresholds genuinely
+			// empty until the user actually sets one preserves the
+			// distinction between "never configured" and "configured to
+			// 512" -- the whole reason profile.thresholds.length is used
+			// as a check anywhere in this file.
 			const defaultThresholds = Array(numSensors).fill(512);
 			setThresholds(defaultThresholds);
-			if (activeProfileId) void updateThresholds(defaultThresholds);
 		}
 
 		if (profile.sensorLabels.length > 0) {
@@ -2744,10 +2891,17 @@ const Dashboard = () => {
 		if (numSensors === 0) return;
 
 		if (thresholds.length !== numSensors) {
+			// Local display-only fill, deliberately NOT persisted to the
+			// profile (no updateThresholds call here) -- this effect fires
+			// on every numSensors change, which includes ordinary connects
+			// where `thresholds` just hasn't caught up to the real count
+			// yet. Persisting here meant a plain connect/reconnect could
+			// silently bake "512 for every sensor" into the active
+			// profile before syncUIStateWithProfile even got a chance to
+			// load the profile's real saved thresholds -- see the longer
+			// writeup at syncUIStateWithProfile for why that matters.
 			const newThresholds = Array(numSensors).fill(512);
 			setThresholds(newThresholds);
-
-			if (activeProfileId) updateThresholds(newThresholds);
 		}
 
 		if (sensorLabels.length !== numSensors) {
@@ -3229,10 +3383,11 @@ const Dashboard = () => {
 								onTuningValuesChange={onTuningValuesChangeStable}
 								displayOrder={effectiveDisplayOrder}
 								moveDisplayPosition={moveDisplayPosition}
+								deviceId={deviceId}
 							/>
 
 							{/* ── FIRMWARE UPDATE SECTION ── */}
-							<FirmwareUpdateSection connected={connected} sendText={sendTextStable} connect={connect} disconnect={disconnect} />
+							<FirmwareUpdateSection connected={connected} sendText={sendTextStable} connect={connect} disconnect={disconnect} onDeviceIdChange={onDeviceIdChangeStable} />
 
 							<ProfilesSection
 								profiles={profiles}

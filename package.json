@@ -1,6 +1,6 @@
 {
 	"name": "awakened-animus",
-	"version": "1.0.8",
+	"version": "1.0.9",
 	"private": true,
 	"type": "module",
 	"description": "Web client for managing FSR dance pads",
@@ -22,13 +22,20 @@
 			"dist/**/*",
 			"electron/**/*"
 		],
+		"extraResources": [
+			{
+				"from": "resources/teensy_loader_cli",
+				"to": "teensy_loader_cli"
+			}
+		],
 		"win": {
 			"target": "nsis",
 			"icon": "public/icon.png"
 		},
 		"nsis": {
 			"oneClick": false,
-			"allowToChangeInstallationDirectory": true
+			"allowToChangeInstallationDirectory": true,
+			"include": "build/installer.nsh"
 		}
 	},
 	"dependencies": {
