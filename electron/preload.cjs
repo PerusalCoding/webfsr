@@ -7,7 +7,8 @@
 // best-effort reconstruction covering:
 //   1. The ITGMania bridge calls main.cjs already expects
 //      ('itgmania-bridge:broadcast', 'itgmania-bridge:get-port')
-//   2. The new firmware flashing calls added for the Update feature
+//   2. The firmware flashing calls added for the firmware Update feature
+//   3. The app auto-update calls added for the electron-updater integration
 //
 // If you already have a preload.cjs with other exposed methods,
 // merge the `electronAPI` object below into it rather than
@@ -48,4 +49,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('firmware:flash-progress', handler)
     return () => ipcRenderer.removeListener('firmware:flash-progress', handler)
   },
+
+  // ── App auto-updates (Update feature) ──────────────────────────────────
+  // Subscribes to updater status changes (checking / available / downloading
+  // / downloaded / up-to-date / error). Returns an unsubscribe function --
+  // call it in a useEffect cleanup.
+  onUpdaterStatus: (callback) => {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('updater:status', handler)
+    return () => ipcRenderer.removeListener('updater:status', handler)
+  },
+  // Starts downloading the update the user just accepted.
+  downloadUpdate: () => ipcRenderer.invoke('updater:download'),
+  // Quits and installs an already-downloaded update.
+  installUpdate: () => ipcRenderer.invoke('updater:install'),
+  // Persists "don't ask about this version again" so it won't reappear
+  // until a newer version ships.
+  skipUpdateVersion: (version) => ipcRenderer.invoke('updater:skip', version),
+  // Manually re-triggers a check (e.g. the "Try Again" button after an error).
+  checkForUpdatesAgain: () => ipcRenderer.invoke('updater:check-again'),
 })

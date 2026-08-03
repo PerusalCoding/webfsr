@@ -1,6 +1,6 @@
 {
 	"name": "awakened-animus",
-	"version": "1.0.9",
+	"version": "1.1.0",
 	"private": true,
 	"type": "module",
 	"description": "Web client for managing FSR dance pads",
@@ -13,7 +13,8 @@
 		"generate-pwa-assets": "pwa-assets-generator --preset minimal-2023 public/icon.png",
 		"lint": "oxlint --type-aware --type-check",
 		"electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-		"electron:build": "vite build && electron-builder"
+		"electron:build": "vite build && electron-builder",
+		"electron:release": "vite build && electron-builder --publish always"
 	},
 	"build": {
 		"appId": "com.perusalcoding.webfsr",
@@ -26,6 +27,13 @@
 			{
 				"from": "resources/teensy_loader_cli",
 				"to": "teensy_loader_cli"
+			}
+		],
+		"publish": [
+			{
+				"provider": "github",
+				"owner": "REPLACE_WITH_YOUR_GITHUB_USERNAME",
+				"repo": "REPLACE_WITH_YOUR_REPO_NAME"
 			}
 		],
 		"win": {
@@ -56,6 +64,7 @@
 		"class-variance-authority": "^0.7.1",
 		"clsx": "^2.1.1",
 		"cmdk": "1.1.1",
+		"electron-updater": "^6.8.9",
 		"html5-qrcode": "^2.3.8",
 		"idb": "^8.0.3",
 		"lucide-react": "^0.562.0",

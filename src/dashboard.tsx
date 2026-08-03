@@ -13,6 +13,7 @@ import { OBSComponentDialog } from "~/components/OBSComponentDialog";
 import PairingQRModal from "~/components/PairingQRModal";
 import SensorBar from "~/components/SensorBar";
 import TimeSeriesGraph from "~/components/TimeSeriesGraph";
+import UpdateModal from "~/components/UpdateModal";
 import { Button } from "~/components/ui/button";
 import { CustomScrollArea } from "~/components/ui/custom-scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
@@ -2452,31 +2453,43 @@ const Dashboard = () => {
 	const updateProfileStable = useStableCallback(updateProfile);
 	const setActiveProfileByIdStable = useStableCallback(setActiveProfileById);
 	const resetProfileToDefaultsStable = useStableCallback(resetProfileToDefaults);
-	// Three-way theme cycle: light → dark → animus → light
-	// Animus mode is tracked independently so it can be layered on top of the
-	// existing useTheme system (which only knows light/dark). When animus is
-	// active we force the underlying theme to "dark" so Tailwind's dark:
-	// classes render correctly, then our CSS variable overrides finish the job.
+	// Four-way theme cycle: light → dark → animus → ruby → light
+	// Animus and Ruby modes are tracked independently so they can be layered on
+	// top of the existing useTheme system (which only knows light/dark). When
+	// either is active we force the underlying theme to "dark" so Tailwind's
+	// dark: classes render correctly, then our CSS variable overrides finish
+	// the job. Ruby is the "Id" palette — deep garnet/near-black base with the
+	// same gold armor accent as Animus, swapping the teal for a ruby red.
 	const LS_ANIMUS_KEY = "webfsr_animus_theme";
+	const LS_RUBY_KEY = "webfsr_ruby_theme";
 	const [animusTheme, setAnimusTheme] = useState<boolean>(() => {
 		try { return localStorage.getItem(LS_ANIMUS_KEY) === "true"; } catch { return false; }
 	});
+	const [rubyTheme, setRubyTheme] = useState<boolean>(() => {
+		try { return localStorage.getItem(LS_RUBY_KEY) === "true"; } catch { return false; }
+	});
 
-	// Keep underlying dark mode in sync with animus state
+	// Keep underlying dark mode in sync with animus/ruby state
 	useEffect(() => {
-		if (animusTheme) setTheme("dark");
-	}, [animusTheme]);
+		if (animusTheme || rubyTheme) setTheme("dark");
+	}, [animusTheme, rubyTheme]);
 
 	const toggleTheme = useStableCallback(() => {
-		if (resolvedTheme === "light" && !animusTheme) {
+		if (resolvedTheme === "light" && !animusTheme && !rubyTheme) {
 			setTheme("dark");
-		} else if (resolvedTheme === "dark" && !animusTheme) {
+		} else if (resolvedTheme === "dark" && !animusTheme && !rubyTheme) {
 			setAnimusTheme(true);
 			try { localStorage.setItem(LS_ANIMUS_KEY, "true"); } catch {}
-		} else {
-			// animus → back to light
+		} else if (animusTheme) {
+			// animus → ruby
 			setAnimusTheme(false);
 			try { localStorage.setItem(LS_ANIMUS_KEY, "false"); } catch {}
+			setRubyTheme(true);
+			try { localStorage.setItem(LS_RUBY_KEY, "true"); } catch {}
+		} else {
+			// ruby → back to light
+			setRubyTheme(false);
+			try { localStorage.setItem(LS_RUBY_KEY, "false"); } catch {}
 			setTheme("light");
 		}
 	});
@@ -3124,7 +3137,8 @@ const Dashboard = () => {
 	}
 
 	return (
-		<main className={`grid grid-cols-[17rem_1fr] h-screen w-screen bg-background text-foreground overflow-hidden${animusTheme ? " theme-animus" : ""}`}>
+		<main className={`grid grid-cols-[17rem_1fr] h-screen w-screen bg-background text-foreground overflow-hidden${animusTheme ? " theme-animus" : ""}${rubyTheme ? " theme-ruby" : ""}`}>
+		<UpdateModal animusTheme={animusTheme} rubyTheme={rubyTheme} />
 		{animusTheme && (
 			<style>{`
 				.theme-animus {
@@ -3220,6 +3234,101 @@ const Dashboard = () => {
 				}
 			`}</style>
 		)}
+		{rubyTheme && (
+			<style>{`
+				.theme-ruby {
+					/* Deep garnet-black base */
+					--background:        16 6 8;
+					--foreground:        255 225 220;
+					--card:              22 9 11;
+					--card-foreground:   255 225 220;
+					--popover:           18 7 9;
+					--popover-foreground:255 225 220;
+
+					/* Vivid crimson primary — no gold, reads as the gem's own highlight */
+					--primary:           220 38 38;
+					--primary-foreground:255 240 235;
+
+					/* Ruby secondary */
+					--secondary:         60 8 14;
+					--secondary-foreground:255 90 100;
+
+					/* Muted — slightly brighter than bg so panels read */
+					--muted:             28 11 13;
+					--muted-foreground:  190 120 120;
+
+					/* Ember accent */
+					--accent:            50 8 12;
+					--accent-foreground: 255 110 60;
+
+					/* Border — warm garnet tint */
+					--border:            70 35 38;
+					--input:             24 10 12;
+					--ring:              220 38 38;
+
+					/* Destructive shifted toward orange so it still reads against a red theme */
+					--destructive:       255 120 40;
+					--destructive-foreground:16 6 8;
+
+					--radius: 0.5rem;
+				}
+
+				/* Sidebar */
+				.theme-ruby .border-r {
+					background: rgb(12 5 6) !important;
+					border-color: rgb(70 35 38) !important;
+				}
+
+				/* Panels / cards */
+				.theme-ruby .bg-white,
+				.theme-ruby .dark\\:bg-neutral-900,
+				.theme-ruby .dark\\:bg-neutral-950 {
+					background-color: rgb(22 9 11) !important;
+				}
+
+				/* Borders */
+				.theme-ruby .border,
+				.theme-ruby .border-border {
+					border-color: rgb(70 35 38) !important;
+				}
+
+				/* Ruby glow on focused inputs */
+				.theme-ruby input:focus,
+				.theme-ruby select:focus {
+					outline: none;
+					box-shadow: 0 0 0 2px rgba(230,57,79,0.45);
+				}
+
+				/* Tab active underline — ruby */
+				.theme-ruby .border-foreground {
+					border-color: #E6394F !important;
+					color: #E6394F !important;
+				}
+
+				/* Scrollbar */
+				.theme-ruby ::-webkit-scrollbar-track { background: rgb(16 6 8); }
+				.theme-ruby ::-webkit-scrollbar-thumb { background: rgb(70 35 38); border-radius: 4px; }
+				.theme-ruby ::-webkit-scrollbar-thumb:hover { background: #E6394F; }
+
+				/* Sensor bars base bg */
+				.theme-ruby .bg-muted { background-color: rgb(28 11 13) !important; }
+
+				/* Button primary style override — vivid crimson, no gold */
+				.theme-ruby button[class*="bg-primary"],
+				.theme-ruby [class*="bg-primary"] {
+					background-color: #DC2626 !important;
+					color: rgb(255 240 235) !important;
+				}
+
+				/* Subtle ember/circuit background pattern on the main content area */
+				.theme-ruby > div:last-child {
+					background-image:
+						linear-gradient(rgba(230,57,79,0.04) 1px, transparent 1px),
+						linear-gradient(90deg, rgba(230,57,79,0.04) 1px, transparent 1px);
+					background-size: 32px 32px;
+				}
+			`}</style>
+		)}
 			{/* Sidebar */}
 			<div className="border-r border-border bg-gray-100 dark:bg-neutral-950 overflow-hidden">
 				<div className="h-full w-full grid grid-rows-[auto_1fr]">
@@ -3252,10 +3361,13 @@ const Dashboard = () => {
 						)}
 						<h2 className="text-xl font-bold flex-1 text-center leading-tight select-none" style={{ lineHeight: 1.15 }}>
 							<span style={{
-								background: "linear-gradient(135deg, #C9A227 0%, #F0CC55 40%, #00E5CC 75%, #00BFAA 100%)",
+								backgroundImage: rubyTheme
+									? "linear-gradient(135deg, #4A0404 0%, #B91C1C 40%, #EF4444 75%, #FF6B6B 100%)"
+									: "linear-gradient(135deg, #C9A227 0%, #F0CC55 40%, #00E5CC 75%, #00BFAA 100%)",
 								WebkitBackgroundClip: "text",
 								WebkitTextFillColor: "transparent",
 								backgroundClip: "text",
+								color: "transparent",
 								fontWeight: 800,
 								letterSpacing: "0.01em",
 								display: "block",
@@ -3264,17 +3376,21 @@ const Dashboard = () => {
 								opacity: 0.85,
 							}}>Awakened</span>
 							<span style={{
-								background: "linear-gradient(135deg, #C9A227 0%, #E8B830 35%, #00E5CC 70%, #00BFAA 100%)",
+								backgroundImage: rubyTheme
+									? "linear-gradient(135deg, #7A0C1E 0%, #E6394F 35%, #FF4D4D 70%, #FF8A5B 100%)"
+									: "linear-gradient(135deg, #C9A227 0%, #E8B830 35%, #00E5CC 70%, #00BFAA 100%)",
 								WebkitBackgroundClip: "text",
 								WebkitTextFillColor: "transparent",
 								backgroundClip: "text",
+								color: "transparent",
 								fontWeight: 900,
 								letterSpacing: "0.12em",
 								display: "block",
 								fontSize: "1.15rem",
 								textTransform: "uppercase",
-								textShadow: "none",
-								filter: "drop-shadow(0 0 6px rgba(0,229,204,0.35))",
+								textShadow: rubyTheme
+									? "0 0 8px rgba(255,59,59,0.6), 0 0 20px rgba(200,20,40,0.4)"
+									: "0 0 6px rgba(0,229,204,0.35)",
 							}}>Animus</span>
 						</h2>
 						<Button
@@ -3282,8 +3398,8 @@ const Dashboard = () => {
 							size="icon"
 							className="size-8 shrink-0"
 							onClick={toggleTheme}
-							aria-label={animusTheme ? "Switch to Light mode" : resolvedTheme === "dark" ? "Switch to Animus mode" : "Switch to Dark mode"}
-							title={animusTheme ? "Animus theme — click for Light" : resolvedTheme === "dark" ? "Dark theme — click for Animus" : "Light theme — click for Dark"}
+							aria-label={animusTheme ? "Switch to Ruby mode" : rubyTheme ? "Switch to Light mode" : resolvedTheme === "dark" ? "Switch to Animus mode" : "Switch to Dark mode"}
+							title={animusTheme ? "Animus theme — click for Ruby" : rubyTheme ? "Ruby theme — click for Light" : resolvedTheme === "dark" ? "Dark theme — click for Animus" : "Light theme — click for Dark"}
 						>
 							{animusTheme ? (
 								/* Animus icon: a small crystal/gem shape in teal+gold */
@@ -3291,6 +3407,13 @@ const Dashboard = () => {
 									<polygon points="12,2 20,8 17,20 7,20 4,8" fill="rgba(0,229,204,0.18)" stroke="#C9A227" strokeWidth={1.5}/>
 									<polygon points="12,5 17,9 15,18 9,18 7,9" fill="rgba(0,229,204,0.35)" stroke="rgba(0,229,204,0.8)" strokeWidth={1}/>
 									<line x1="12" y1="2" x2="12" y2="22" stroke="rgba(0,229,204,0.5)" strokeWidth={0.8}/>
+								</svg>
+							) : rubyTheme ? (
+								/* Ruby icon: same crystal/gem shape in an all-red ember two-tone (no gold) */
+								<svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
+									<polygon points="12,2 20,8 17,20 7,20 4,8" fill="rgba(220,38,38,0.22)" stroke="#FF5F5F" strokeWidth={1.5}/>
+									<polygon points="12,5 17,9 15,18 9,18 7,9" fill="rgba(230,57,79,0.45)" stroke="rgba(255,107,107,0.9)" strokeWidth={1}/>
+									<line x1="12" y1="2" x2="12" y2="22" stroke="rgba(255,107,107,0.55)" strokeWidth={0.8}/>
 								</svg>
 							) : resolvedTheme === "dark" ? (
 								<Sun className="size-4" />

@@ -4,6 +4,7 @@ const fs = require('fs')
 const os = require('os')
 const { spawn } = require('child_process')
 const { WebSocketServer } = require('ws')
+const { setupAutoUpdater } = require('./updater.cjs')
 
 // Enable WebSerial and other experimental web platform features
 app.commandLine.appendSwitch('enable-experimental-web-platform-features')
@@ -22,6 +23,8 @@ app.commandLine.appendSwitch('enable-experimental-web-platform-features')
 const ITGMANIA_BRIDGE_PORT = 7777
 let wss = null
 let bridgeClients = new Set()
+let mainWindow = null
+let updater = null
 
 function startItgManiaBridge() {
   if (wss) return // already running
@@ -162,7 +165,29 @@ function flashFirmware(event, hexBytes) {
     //       ever ship on a different Teensy model.
     const child = spawn(loader.path, ['-w', '-v', '--mcu=TEENSY40', tmpHexPath])
 
+    // teensy_loader_cli's exit code isn't fully reliable as a success/fail
+    // signal on its own -- on Windows in particular, its final step (briefly
+    // reopening the device to confirm the reboot handshake) can time out
+    // waiting for the OS to re-enumerate the freshly-rebooted board, even
+    // though the actual programming + reboot trigger already completed
+    // successfully underneath. That produced exactly this: a genuine
+    // success, followed by a spurious non-zero exit and an error shown to
+    // the customer for an update that had already worked.
+    //
+    // "Booting" is the last line teensy_loader_cli prints once it has
+    // successfully written the program AND told the board to reboot into
+    // it -- everything that actually matters for the update to have taken.
+    // Anything after that point (the flaky reopen/verify) doesn't change
+    // whether the update itself succeeded, so we treat seeing "Booting" as
+    // authoritative and only fall back to the raw exit code if we never
+    // saw it (a genuine failure, e.g. device never entered bootloader mode,
+    // wrong --mcu, verify mismatch, etc. all exit before printing it).
+    let sawBootingLine = false
+    const allOutput = []
+
     const sendProgress = (line) => {
+      allOutput.push(line)
+      if (line.includes('Booting')) sawBootingLine = true
       if (event?.sender && !event.sender.isDestroyed()) {
         event.sender.send('firmware:flash-progress', line)
       }
@@ -182,7 +207,14 @@ function flashFirmware(event, hexBytes) {
 
     child.on('close', (code) => {
       cleanup()
-      if (code === 0) {
+      if (code === 0 || sawBootingLine) {
+        if (code !== 0) {
+          console.warn(
+            `[firmware] teensy_loader_cli exited with code ${code} but printed ` +
+            `"Booting" -- treating as success (see comment above). Full output:\n` +
+            allOutput.join('\n')
+          )
+        }
         resolve({ success: true })
       } else {
         reject(new Error(`teensy_loader_cli exited with code ${code}`))
@@ -201,6 +233,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
     },
   })
+
+  mainWindow = win
 
   // Show a dialog so the user can pick their COM port
   win.webContents.session.on('select-serial-port', async (event, portList, webContents, callback) => {
@@ -241,6 +275,10 @@ function createWindow() {
     return details.deviceType === 'serial'
   })
 
+  win.on('closed', () => {
+    mainWindow = null
+  })
+
   // Load the built Vite app
   // In development (npm run electron:dev), load the Vite dev server so
   // hot reload works. In production (after `vite build`), load the
@@ -272,9 +310,21 @@ ipcMain.handle('itgmania-bridge:get-port', () => ITGMANIA_BRIDGE_PORT)
 ipcMain.handle('firmware:check-loader', () => checkTeensyLoaderAvailable())
 ipcMain.handle('firmware:flash', (event, hexBytes) => flashFirmware(event, hexBytes))
 
+// ── IPC: app auto-updates (Update feature) ──────────────────────────────────
+// Checking happens automatically (on launch + every 4h below); nothing
+// downloads or installs without the user hitting "Update Now" in the modal.
+ipcMain.handle('updater:download', () => updater?.downloadUpdate())
+ipcMain.handle('updater:install', () => updater?.quitAndInstall())
+ipcMain.handle('updater:skip', (event, version) => updater?.skipVersion(version))
+ipcMain.handle('updater:check-again', () => updater?.checkForUpdates())
+
 app.whenReady().then(() => {
   createWindow()
   startItgManiaBridge()
+
+  updater = setupAutoUpdater(mainWindow)
+  updater.checkForUpdates()
+  setInterval(() => updater.checkForUpdates(), 4 * 60 * 60 * 1000) // re-check every 4h
 })
 
 app.on('window-all-closed', () => {
