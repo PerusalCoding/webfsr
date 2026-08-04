@@ -24,6 +24,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   broadcastToItgMania: (payload) => ipcRenderer.send('itgmania-bridge:broadcast', payload),
   getItgManiaBridgePort: () => ipcRenderer.invoke('itgmania-bridge:get-port'),
 
+  // ── OBS overlay static server ──────────────────────────────────────
+  // Returns e.g. "http://127.0.0.1:47831" -- the base URL of the local
+  // HTTP server main.cjs runs to serve dist/obs/* pages for OBS Browser
+  // Sources. Whatever builds the Component Type dialog's copyable URL
+  // should use this (+ "/obs/<page>/?pwd=...") instead of a "file://"
+  // path, since OBS's own Chromium (CEF) can't read files out of
+  // app.asar the way Electron's patched one can -- see the longer
+  // writeup on startObsStaticServer() in main.cjs.
+  getObsServerBaseUrl: () => ipcRenderer.invoke('obs-server:get-base-url'),
+
   // ── Firmware flashing ──────────────────────────────────────────────
   // Checks whether the bundled teensy_loader_cli binary is actually
   // present for this platform BEFORE attempting a flash, so the UI can

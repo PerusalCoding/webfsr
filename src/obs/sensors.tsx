@@ -106,23 +106,28 @@ function SensorsOBSComponent() {
 
 				if (payload.thresholds && Array.isArray(payload.thresholds)) setThresholds(payload.thresholds);
 
-				// Generate sensor labels if we don't have them
-				if (sensorLabels.length === 0 && payload.values) {
-					const numSensors = payload.values.length;
-					const configuredLabels = config.sensorLabels.length > 0 ? config.sensorLabels : [];
-
-					const newLabels = Array.from({ length: numSensors }, (_, i) => {
-						return configuredLabels[i] || `Sensor ${i + 1}`;
+				// Generate sensor labels if we don't have them. Functional
+				// update instead of closing over sensorLabels.length -- see
+				// the matching comment in graph.tsx for why: this keeps the
+				// effect's dependency array free of state that changes as
+				// a direct result of this same handler running, which
+				// previously tore down and rebuilt the listener the moment
+				// labels first populated.
+				if (payload.values) {
+					const values = payload.values;
+					setSensorLabels((prev) => {
+						if (prev.length !== 0) return prev;
+						const numSensors = values.length;
+						const configuredLabels = config.sensorLabels.length > 0 ? config.sensorLabels : [];
+						return Array.from({ length: numSensors }, (_, i) => configuredLabels[i] || `Sensor ${i + 1}`);
 					});
-
-					setSensorLabels(newLabels);
 				}
 			} catch {
 				// ignore
 			}
 		});
 		return unmount;
-	}, [addCustomEventListener, sensorLabels.length]);
+	}, [addCustomEventListener]);
 
 	if (!isConnected && !isConnecting) {
 		return (

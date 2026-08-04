@@ -2,6 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
+const http = require('http')
 const { spawn } = require('child_process')
 const { WebSocketServer } = require('ws')
 const { setupAutoUpdater } = require('./updater.cjs')
@@ -87,6 +88,160 @@ function stopItgManiaBridge() {
   wss.close()
   wss = null
   console.log('[ITGMania bridge] server stopped')
+}
+
+// ── OBS overlay static server ────────────────────────────────────────────
+// The OBS Component dialog generates URLs like
+// "file:///.../resources/app.asar/dist/obs/sensors/?pwd=..." for people to
+// paste into an OBS Browser Source. That silently fails to load ANYTHING:
+// Electron patches its own bundled Chromium to transparently read files
+// out of app.asar, but OBS's Browser Source runs a separate, plain,
+// unmodified CEF (Chromium Embedded Framework) instance that has never
+// heard of app.asar -- to it, app.asar just looks like one opaque binary
+// file, not a folder it can look inside. The page never loads, so nothing
+// on it (including its obs-websocket-js connection) ever gets the chance
+// to run -- which is what looked like "the OBS component can't connect
+// to the websocket," but was actually "the page never loaded at all."
+//
+// Fix: serve dist/obs/ over plain HTTP instead. This process (Electron's
+// MAIN process, not the renderer) runs under a full Node.js environment,
+// and Electron's Node-level `fs` patches (not just its Chromium ones) DO
+// transparently support reading out of app.asar -- so a normal Node
+// http.Server here can read these files fine even when packaged. OBS's
+// Browser Source then just talks plain HTTP to this server like it would
+// to any other website, never touching app.asar directly at all.
+//
+// Deliberately NOT using OBS's own websocket port (4455) -- that's OBS's
+// own server that THIS APP connects to as a client (via obs-websocket-js)
+// for the broadcast/CustomEvent channel; it's unrelated to serving these
+// static pages, and reusing it would conflict with OBS's own listener.
+const OBS_STATIC_SERVER_PORT = 47831
+const OBS_MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+}
+let obsServer = null
+
+function getObsStaticRoot() {
+  // app.getAppPath() resolves consistently to the project root in dev and
+  // to the app.asar path once packaged -- Node's fs (see comment above)
+  // reads through the latter transparently, so this one path works for
+  // both without branching on app.isPackaged.
+  return path.join(app.getAppPath(), 'dist', 'obs')
+}
+
+function getDistRoot() {
+  // The full dist/ root -- needed to serve /assets/ which lives at
+  // dist/assets/, one level above dist/obs/ where the overlays live.
+  return path.join(app.getAppPath(), 'dist')
+}
+
+function startObsStaticServer() {
+  if (obsServer) return // already running
+
+  const root = getObsStaticRoot()
+
+  obsServer = http.createServer((req, res) => {
+    try {
+      // Strip the query string (?pwd=... etc.) before resolving a file
+      // path with it -- the OBS pages read that client-side via
+      // URLSearchParams once loaded, it's irrelevant to which file to
+      // serve.
+      let urlPath = decodeURIComponent((req.url || '/').split('?')[0])
+
+      // Directory requests resolve to that directory's index.html, same
+      // as a normal web server -- this is what a trailing-slash URL like
+      // "/sensors/" needs to actually resolve to a real file.
+      if (urlPath.endsWith('/')) urlPath += 'index.html'
+
+      // /assets/ lives at dist/assets/, not dist/obs/assets/ -- resolve
+      // these from the dist root instead of the obs root so Vite-built
+      // JS/CSS chunks are found correctly.
+      const distRoot = getDistRoot()
+      let resolveBase = root
+      if (urlPath.startsWith('/assets/') || urlPath.startsWith('/registerSW') || urlPath === '/manifest.webmanifest') {
+        resolveBase = distRoot
+      }
+
+      const filePath = path.join(resolveBase, urlPath)
+      const safeBase = resolveBase
+      if (!filePath.startsWith(safeBase) && !filePath.startsWith(distRoot)) {
+        res.writeHead(403)
+        res.end('Forbidden')
+        return
+      }
+
+      fs.readFile(filePath, (err, data) => {
+        if (err) {
+          res.writeHead(404)
+          res.end('Not found')
+          return
+        }
+        const ext = path.extname(filePath).toLowerCase()
+        const contentType = OBS_MIME_TYPES[ext] || 'application/octet-stream'
+
+        // HTML files from obs/*/index.html use relative paths like
+        // "../../assets/foo.js" which break when served from /sensors/ etc.
+        // Also strip the PWA manifest link and registerSW script -- they use
+        // "./" paths that resolve to the wrong directory and throw JS errors
+        // that prevent the React app from mounting at all.
+        // We fix both by rewriting the HTML before sending it.
+        let responseData = data
+        if (ext === '.html') {
+          let html = data.toString('utf8')
+          // Fix ../../assets/ -> /assets/ (and any other relative escapes)
+          html = html.replace(/src="\.\.\/\.\.\/assets\//g, 'src="/assets/')
+          html = html.replace(/href="\.\.\/\.\.\/assets\//g, 'href="/assets/')
+          // Remove PWA manifest and registerSW injection -- they don't belong
+          // in the OBS overlay pages and break them with bad relative paths.
+          html = html.replace(/<link rel="manifest"[^>]*>/g, '')
+          html = html.replace(/<script[^>]*vite-plugin-pwa[^>]*>[^<]*<\/script>/g, '')
+          html = html.replace(/<script[^>]*registerSW\.js[^>]*><\/script>/g, '')
+          responseData = Buffer.from(html, 'utf8')
+        }
+
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Access-Control-Allow-Origin': '*',
+          'Content-Length': responseData.length,
+        })
+        res.end(responseData)
+      })
+    } catch (err) {
+      console.error('[OBS static server] request error:', err)
+      res.writeHead(500)
+      res.end('Internal error')
+    }
+  })
+
+  obsServer.on('error', (err) => {
+    // Most common cause: port already in use (e.g. app restarted too
+    // quickly, or another instance is already running) -- mirrors the
+    // ITGMania bridge's error handling above.
+    console.error('[OBS static server] server error:', err)
+  })
+
+  obsServer.listen(OBS_STATIC_SERVER_PORT, '127.0.0.1', () => {
+    console.log(`[OBS static server] serving ${root} at http://127.0.0.1:${OBS_STATIC_SERVER_PORT}`)
+  })
+}
+
+function stopObsStaticServer() {
+  if (!obsServer) return
+  obsServer.close()
+  obsServer = null
+  console.log('[OBS static server] server stopped')
 }
 
 // ── Firmware flashing (WebFsr Update feature) ───────────────────────────────
@@ -303,6 +458,13 @@ ipcMain.on('itgmania-bridge:broadcast', (event, payload) => {
 
 ipcMain.handle('itgmania-bridge:get-port', () => ITGMANIA_BRIDGE_PORT)
 
+// ── IPC: OBS overlay static server ───────────────────────────────────────
+// Wherever the Component Type dialog currently builds a "file:///..."
+// URL, it needs to build "http://127.0.0.1:<port>/obs/<page>/?pwd=..."
+// instead -- this exposes the port (and full base URL, so the renderer
+// doesn't need to hardcode "http://127.0.0.1" itself) to do that.
+ipcMain.handle('obs-server:get-base-url', () => `http://127.0.0.1:${OBS_STATIC_SERVER_PORT}`)
+
 // ── IPC: firmware flashing ───────────────────────────────────────────────
 // hexBytes arrives as an ArrayBuffer from the renderer (it already fetched
 // the .hex from the manifest's hexUrl); ipcMain.handle auto-marshals it as
@@ -321,6 +483,7 @@ ipcMain.handle('updater:check-again', () => updater?.checkForUpdates())
 app.whenReady().then(() => {
   createWindow()
   startItgManiaBridge()
+  startObsStaticServer()
 
   updater = setupAutoUpdater(mainWindow)
   updater.checkForUpdates()
@@ -329,5 +492,6 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   stopItgManiaBridge()
+  stopObsStaticServer()
   if (process.platform !== 'darwin') app.quit()
 })

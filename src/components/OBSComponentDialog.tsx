@@ -283,6 +283,34 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 	const [heartrateTimeWindowInput, setHeartrateTimeWindowInput] = useState<string>("");
 	const [mockHeartrateHistory, setMockHeartrateHistory] = useState<HeartrateSample[]>([]);
 
+	// When running inside the Electron app, generateUrl() below must build
+	// off this local HTTP server's base URL (e.g. "http://127.0.0.1:47831")
+	// instead of window.location.href. In Electron, window.location.href is
+	// a "file:///.../resources/app.asar/dist/index.html" URL -- pasting
+	// anything built from that into OBS's Browser Source produces a link
+	// OBS's own Chromium (CEF) can't load at all, since it has no idea how
+	// to read inside app.asar the way Electron's patched Chromium can. See
+	// the longer writeup on startObsStaticServer() in main.cjs.
+	//
+	// Fetched once on mount (the port never changes at runtime) rather than
+	// on every generateUrl() call, since it's an async IPC round-trip and
+	// generateUrl() itself needs to stay callable synchronously elsewhere.
+	// Stays null in the plain browser/GitHub Pages build (no
+	// window.electronAPI there), in which case generateUrl() below falls
+	// back to the original window.location-based logic unchanged.
+	const [obsServerBaseUrl, setObsServerBaseUrl] = useState<string | null>(null);
+	useEffect(() => {
+		const api = (window as unknown as { electronAPI?: { getObsServerBaseUrl?: () => Promise<string> } }).electronAPI;
+		if (!api?.getObsServerBaseUrl) return; // plain browser build -- nothing to fetch
+		let cancelled = false;
+		api.getObsServerBaseUrl().then((base) => {
+			if (!cancelled) setObsServerBaseUrl(base);
+		}).catch((err) => {
+			console.error("Failed to reach the local OBS overlay server:", err);
+		});
+		return () => { cancelled = true; };
+	}, []);
+
 	// Update sensor labels when dialog opens or active profile changes
 	useEffect(() => {
 		if (open && activeProfile?.sensorLabels) {
@@ -401,7 +429,7 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 
 	useEffect(() => {
 		generateUrl();
-	}, [config, selectedComponent, passwordProp, open]);
+	}, [config, selectedComponent, passwordProp, open, obsServerBaseUrl]);
 
 	const isGraphConfig = (c: ComponentConfig): c is GraphConfig =>
 		c != null && typeof (c as GraphConfig).timeWindow === "number" && Array.isArray((c as GraphConfig).sensorColors);
@@ -410,19 +438,40 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 		c != null && ((c as HeartrateConfig).mode === "current" || (c as HeartrateConfig).mode === "graph");
 
 	const generateUrl = () => {
-		// IMPORTANT: window.location.origin only gives the domain root
-		// (e.g. "https://perusalcoding.github.io"), NOT the "/webfsr/"
-		// subpath this site is actually deployed at on GitHub Pages.
-		// Using origin alone produced a link that 404s, since the real
-		// app (and its obs/* sub-pages) live one level deeper. Building
-		// from location.href's directory instead correctly preserves
-		// whatever subpath the page is actually being served from --
-		// same fix as the QR pairing URL in PairingQRModal.tsx.
-		const currentUrl = new URL(window.location.href);
-		const pathDir = currentUrl.pathname.endsWith("/")
-			? currentUrl.pathname
-			: currentUrl.pathname.slice(0, currentUrl.pathname.lastIndexOf("/") + 1);
-		const baseUrl = `${currentUrl.origin}${pathDir}obs/${selectedComponent}/`;
+		// In Electron, always prefer the local OBS static server's base URL
+		// (fetched once on mount above) over window.location -- see the
+		// obsServerBaseUrl comment for why window.location is unusable here
+		// when packaged. obsServerBaseUrl is null both before that fetch
+		// resolves and permanently in the plain browser/GitHub Pages build
+		// (no window.electronAPI there), so this only takes the Electron
+		// path once the real base URL is actually known.
+		let baseUrl: string;
+		if (obsServerBaseUrl) {
+			// NOTE: startObsStaticServer()'s root in main.cjs is already
+			// path.join(app.getAppPath(), 'dist', 'obs') -- i.e. it's
+			// pre-scoped to the obs/ folder. Appending "/obs/<page>/" here
+			// on top of that (like the GitHub Pages branch below has to)
+			// would double it up into a request for "/obs/graph/", which
+			// resolves on disk to ".../dist/obs/obs/graph/index.html" --
+			// doesn't exist, hence the "Not found" 404 body rendering
+			// inside the OBS Browser Source. The server's root already
+			// covers the "obs" segment, so only the page name is needed.
+			baseUrl = `${obsServerBaseUrl}/${selectedComponent}/`;
+		} else {
+			// IMPORTANT: window.location.origin only gives the domain root
+			// (e.g. "https://perusalcoding.github.io"), NOT the "/webfsr/"
+			// subpath this site is actually deployed at on GitHub Pages.
+			// Using origin alone produced a link that 404s, since the real
+			// app (and its obs/* sub-pages) live one level deeper. Building
+			// from location.href's directory instead correctly preserves
+			// whatever subpath the page is actually being served from --
+			// same fix as the QR pairing URL in PairingQRModal.tsx.
+			const currentUrl = new URL(window.location.href);
+			const pathDir = currentUrl.pathname.endsWith("/")
+				? currentUrl.pathname
+				: currentUrl.pathname.slice(0, currentUrl.pathname.lastIndexOf("/") + 1);
+			baseUrl = `${currentUrl.origin}${pathDir}obs/${selectedComponent}/`;
+		}
 		const pwd = (passwordProp ?? activeProfile?.obsPassword) || "YOUR_OBS_PASSWORD_HERE";
 
 		const params = new URLSearchParams({ pwd: pwd });

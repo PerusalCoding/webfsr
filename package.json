@@ -1,6 +1,6 @@
 {
 	"name": "awakened-animus",
-	"version": "1.1.0",
+	"version": "1.1.21",
 	"private": true,
 	"type": "module",
 	"description": "Web client for managing FSR dance pads",
@@ -33,7 +33,7 @@
 			{
 				"provider": "github",
 				"owner": "PerusalCoding",
-				"repo": "webfsr"
+				"repo": "Awakened-Animus-App"
 			}
 		],
 		"win": {

@@ -82,16 +82,23 @@ function GraphOBSComponent() {
 					setThresholds(payload.thresholds);
 				}
 
-				// Generate default sensor labels if we don't have them
-				if (sensorLabels.length === 0 && payload.values) {
-					setSensorLabels(payload.values.map((_, i) => `Sensor ${i + 1}`));
+				// Generate default sensor labels if we don't have them.
+				// Functional update (reading prev directly) instead of
+				// closing over sensorLabels.length -- keeps this effect's
+				// dependency array free of state that changes as a
+				// DIRECT RESULT of this same handler running, which
+				// previously caused the listener to be torn down and
+				// re-subscribed the moment labels first populated (a real
+				// gap where an incoming broadcast could be missed).
+				if (payload.values) {
+					setSensorLabels((prev) => (prev.length === 0 ? payload.values!.map((_, i) => `Sensor ${i + 1}`) : prev));
 				}
 			} catch {
 				// ignore
 			}
 		});
 		return unmount;
-	}, [addCustomEventListener, sensorLabels.length]);
+	}, [addCustomEventListener]);
 
 	// Show connection status if not connected
 	if (!isConnected && !isConnecting) {

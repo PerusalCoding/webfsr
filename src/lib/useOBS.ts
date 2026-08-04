@@ -15,6 +15,34 @@ type JsonObject = { [key: string]: JsonValue };
 
 type CustomEventHandler = (eventData: ObsBroadcastPayload) => void;
 
+// Wraps a callback so the function IDENTITY returned never changes across
+// renders, while always calling through to the latest actual
+// implementation via a ref. Same pattern already used elsewhere in this
+// codebase (see useStableCallback in dashboard_pro.tsx/dashboard_public.tsx).
+//
+// Without this, connect/disconnect/broadcast/addCustomEventListener below
+// were plain closures recreated fresh on every render of useOBS(). Every
+// consumer (graph.tsx, sensors.tsx) has a
+// `useEffect(() => { const unmount = addCustomEventListener(...); return
+// unmount; }, [addCustomEventListener, ...])` that re-subscribes the OBS
+// "CustomEvent" listener any time addCustomEventListener's identity
+// changes -- which, unmemoized, was EVERY render, including every render
+// triggered by receiving a broadcast (since handling one calls setState,
+// which re-renders, which calls useOBS() again, which returns a fresh
+// addCustomEventListener). That churn tears down and rebuilds the actual
+// obs-websocket-js listener on every single incoming event, creating a
+// real (if narrow) window where a broadcast can arrive between the old
+// listener's removal and the new one's attachment and get silently
+// dropped -- a very plausible cause of data intermittently just not
+// showing up in the OBS overlay pages.
+function useStableCallback<Args extends unknown[], R>(callback: (...args: Args) => R): (...args: Args) => R {
+	const callbackRef = useRef(callback);
+	callbackRef.current = callback;
+
+	const stableCallbackRef = useRef((...args: Args) => callbackRef.current(...args));
+	return stableCallbackRef.current as (...args: Args) => R;
+}
+
 export const useOBS = () => {
 	const obsRef = useRef<OBSWebSocket | null>(null);
 	const [isConnected, setIsConnected] = useState<boolean>(false);
@@ -207,16 +235,22 @@ export const useOBS = () => {
 		};
 	}, []);
 
+	const stableConnect = useStableCallback(connect);
+	const stableDisconnect = useStableCallback(disconnect);
+	const stableBroadcast = useStableCallback(broadcast);
+	const stableAddCustomEventListener = useStableCallback(addCustomEventListener);
+	const stableSetAutoConnectEnabled = useStableCallback(setAutoConnectEnabled);
+
 	return {
-		connect,
-		disconnect,
-		broadcast,
-		addCustomEventListener,
+		connect: stableConnect,
+		disconnect: stableDisconnect,
+		broadcast: stableBroadcast,
+		addCustomEventListener: stableAddCustomEventListener,
 		isConnected,
 		isConnecting,
 		error,
 		autoConnect,
 		nextRetryInMs,
-		setAutoConnectEnabled,
+		setAutoConnectEnabled: stableSetAutoConnectEnabled,
 	};
 };

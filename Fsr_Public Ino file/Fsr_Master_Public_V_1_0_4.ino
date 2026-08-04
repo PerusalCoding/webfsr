@@ -24,9 +24,31 @@
   void ButtonPress(uint8_t button_num) { Joystick.button(button_num, 1); }
   void ButtonRelease(uint8_t button_num) { Joystick.button(button_num, 0); }
   bool ButtonSend() { Joystick.send_now(); return true; }
+  // Reports this board's factory-unique chip ID over serial (as part of
+  // the 'i' identify command below) so WebFsr can tell physically
+  // distinct pads apart when more than one is connected to the same
+  // computer -- without this, two pads' saved Advanced Tuning/profile
+  // data would silently clobber each other in the dashboard, since it
+  // had no way to distinguish which pad it was actually talking to.
+  // Only Teensy 4.x (IMXRT1062) actually has the HW_OCOTP_CFG0/CFG1
+  // fused-in-silicon unique ID registers this relies on -- Teensy 3.x
+  // doesn't expose an equivalent, so this deliberately prints nothing
+  // at all there (not even a blank field), which the dashboard already
+  // treats identically to "older firmware with no chip ID support".
+  void PrintUniqueChipIdIfAvailable() {
+    #if defined(__IMXRT1062__)
+      uint32_t hi = HW_OCOTP_CFG1;
+      uint32_t lo = HW_OCOTP_CFG0;
+      char buf[17];
+      snprintf(buf, sizeof(buf), "%08lX%08lX", (unsigned long)hi, (unsigned long)lo);
+      Serial.print(" ");
+      Serial.print(buf);
+    #endif
+  }
 #elif defined(ARDUINO_ARCH_RP2040) || defined(PICO_BOARD)
   #include <Joystick.h>
   #include "tusb.h"
+  #include "pico/unique_id.h"
   int usb_hid_poll_interval = 1;
   void ButtonStart() { Joystick.begin(); Joystick.useManualSend(true); }
   void ButtonPress(uint8_t button_num) { Joystick.button(button_num, 1); }
@@ -35,6 +57,17 @@
     if (!tud_hid_ready()) return false;
     Joystick.send_now(); return true;
   }
+  // RP2040's flash chip has its own factory-unique 64-bit ID, exposed via
+  // the Pico SDK's pico_get_unique_board_id() -- see the matching Teensy
+  // comment above for why this field exists at all.
+  void PrintUniqueChipIdIfAvailable() {
+    pico_unique_board_id_t id;
+    pico_get_unique_board_id(&id);
+    char buf[17];
+    for (int i = 0; i < 8; i++) snprintf(buf + (i * 2), 3, "%02X", id.id[i]);
+    Serial.print(" ");
+    Serial.print(buf);
+  }
 #elif defined(USE_ARDUINO_JOYSTICK_LIBRARY)
   #include <Joystick.h>
   Joystick_ Joystick;
@@ -42,12 +75,19 @@
   void ButtonPress(uint8_t button_num) { Joystick.pressButton(button_num); }
   void ButtonRelease(uint8_t button_num) { Joystick.releaseButton(button_num); }
   bool ButtonSend() { Joystick.sendState(); return true; }
+  // No reliable factory-unique hardware ID available on this target --
+  // deliberately a no-op. The dashboard treats a missing chip ID field
+  // exactly like older firmware that predates this feature, so this is
+  // a safe (if less capable) fallback rather than fabricating a fake ID.
+  void PrintUniqueChipIdIfAvailable() {}
 #else
   #include <Keyboard.h>
   void ButtonStart() { Keyboard.begin(); }
   void ButtonPress(uint8_t button_num) { Keyboard.press('a' + button_num - 1); }
   void ButtonRelease(uint8_t button_num) { Keyboard.release('a' + button_num - 1); }
   bool ButtonSend() { return true; }
+  // Same reasoning as the USE_ARDUINO_JOYSTICK_LIBRARY branch above.
+  void PrintUniqueChipIdIfAvailable() {}
 #endif
 
 /*===========================================================================*/
@@ -64,16 +104,6 @@
 // the settings above), this firmware drives LED data out BOTH pin 6 and
 // pin 7 in setup() so a single build works on either board -- see the
 // FastLED.addLeds() calls there rather than a single DATA_PIN constant.
-
-// FIRMWARE VERSION -- reported over serial via the 'i' command so
-// WebFsr can check for and apply updates. Bump kFirmwareVersion on
-// every public release; bump kFirmwareBuild for any rebuild of the
-// same version (debug tweaks, recompiles) that doesn't change behavior.
-// kEepromSchema below should track kEepromMarker so the dashboard can
-// tell whether an update will preserve or reset saved calibration
-// BEFORE it happens, not just find out after the fact.
-const char* const kFirmwareVersion = "1.0.2";
-const uint8_t kEepromSchema = 0xA8;  // must match kEepromMarker below
 #define MAX_SENSORS   8
 #define NUM_LEDS      64
 
@@ -408,9 +438,7 @@ void ResolveButtonGroups() {
 /*===========================================================================*/
 // EEPROM LAYOUT
 // --------------
-// Byte 0:        marker (0xA6) -- indicates EEPROM has valid saved config
-//                (bumped from 0xA5 since the layout below changed shape --
-//                 old EEPROM data is safely ignored and defaults applied)
+// Byte 0:        marker (0xA8) -- indicates EEPROM has valid saved config
 // Byte 1:        kNumSensors (1-8)
 // Byte 2:        currentBrightness
 // Bytes 3..:     per-sensor config block, 13 bytes each:
@@ -440,7 +468,14 @@ void ResolveButtonGroups() {
 // of how many sensors are actually active so growing kNumSensors later
 // never collides with the threshold save-slot region below it.
 
-const uint8_t  kEepromMarker     = 0xA8;  // bumped: layout gained release_debounce_ms byte
+// FIRMWARE VERSION -- reported over serial via the 'i' command so WebFsr
+// can check for and apply updates, and warn before an update that would
+// reset EEPROM-saved calibration (by comparing kEepromMarker below
+// against what a candidate release would ship with). Bump on every
+// public release.
+const char* const kFirmwareVersion = "1.0.4";
+
+const uint8_t  kEepromMarker     = 0xA8;
 const size_t   kConfigBytesPerSensor = 13;
 const size_t   kConfigHeaderSize = 3 + (MAX_SENSORS * kConfigBytesPerSensor);
 
@@ -453,15 +488,16 @@ const size_t   kConfigHeaderSize = 3 + (MAX_SENSORS * kConfigBytesPerSensor);
 // a few seconds and then comes back."
 //
 // SaveSensorConfigToEeprom() below rewrites the ENTIRE config header --
-// all MAX_SENSORS slots, 107 bytes -- on every single tuning command
-// (y/r/g/m/d/l/z/b/n), even though only one or two bytes actually
-// changed. Most Teensy cores already skip a physical write when the
-// value is unchanged, but making that explicit here guarantees the
-// behavior regardless of core version, and costs nothing extra since
-// EEPROM.read() is cheap (no flash erase involved, unlike write()).
-// This turns "rewrite 107 bytes" into "compare 107 bytes, write ~0-2",
-// which is what actually keeps flash wear/compaction pauses rare instead
-// of something a single slider drag can trigger.
+// all MAX_SENSORS slots, 107 bytes on this build (13 bytes/sensor) --
+// on every single tuning command (y/r/g/m/d/l/z/b/n), even though only
+// one or two bytes actually changed. Most Teensy cores already skip a
+// physical write when the value is unchanged, but making that explicit
+// here guarantees the behavior regardless of core version, and costs
+// nothing extra since EEPROM.read() is cheap (no flash erase involved,
+// unlike write()). This turns "rewrite 107 bytes" into "compare 107
+// bytes, write ~0-2", which is what actually keeps flash wear/compaction
+// pauses rare instead of something a single Gain/Debounce slider drag
+// can trigger.
 void EepromWriteIfChanged(size_t addr, uint8_t val) {
   if (EEPROM.read(addr) != val) EEPROM.write(addr, val);
 }
@@ -636,52 +672,6 @@ void PrintLedConfig() {
   Serial.print("\n");
 }
 
-/*===========================================================================*/
-
-// Returns this Teensy's factory-programmed 64-bit unique chip ID as a
-// 16-char hex string, so WebFsr can tell physically distinct boards
-// apart when more than one pad is connected to the same computer.
-// Without this, two pads' Advanced Tuning/profile data were stored
-// under the exact same dashboard-side keys and would silently clobber
-// each other's saved settings on reconnect. HW_OCOTP_CFG0/CFG1 are the
-// i.MX RT1062's factory-fused unique ID registers (imxrt.h, part of the
-// Teensy 4.x core, available without an extra #include) -- baked into
-// the silicon at the factory, so this is genuinely unique per physical
-// board regardless of how many times it gets reflashed.
-void PrintUniqueChipId() {
-  uint32_t hi = HW_OCOTP_CFG1;
-  uint32_t lo = HW_OCOTP_CFG0;
-  char buf[17];
-  snprintf(buf, sizeof(buf), "%08lX%08lX", (unsigned long)hi, (unsigned long)lo);
-  Serial.print(buf);
-}
-
-// Prints firmware identification for WebFsr's update checker.
-// Format: "i <version> <eeprom_schema_hex> <num_sensors> <chip_id_hex>"
-// Example: "i 1.0.2 A8 4 1A2B3C4D5E6F7890"
-// The dashboard compares <version> against the latest published
-// release, and compares <eeprom_schema_hex> against the schema the new
-// release would ship with -- a mismatch means an update WILL reset
-// saved calibration (Trigger/Release/Gain/Group/Debounce), which is
-// exactly what should trigger the backup warning before flashing.
-// <chip_id_hex> was added to let the dashboard scope its saved settings
-// per physical board -- older firmware won't send this field at all,
-// which the dashboard treats as "unknown board" and falls back to its
-// previous (unscoped) behavior, so this is safe for a pad that hasn't
-// been updated yet.
-void PrintIdentify() {
-  Serial.print("i ");
-  Serial.print(kFirmwareVersion);
-  Serial.print(" ");
-  if (kEepromSchema < 0x10) Serial.print("0");
-  Serial.print(kEepromSchema, HEX);
-  Serial.print(" ");
-  Serial.print(kNumSensors);
-  Serial.print(" ");
-  PrintUniqueChipId();
-  Serial.print("\n");
-}
-
 class SerialProcessor {
  public:
   void Init(long baud_rate) { Serial.begin(baud_rate); }
@@ -697,13 +687,6 @@ class SerialProcessor {
         case 't': case 'T': PrintThresholds();                  break;
         case 's': case 'S': eeprom_processor_.SaveThresholds(); break;
         case 'q': case 'Q': PrintLedConfig();                   break;
-        // "i" -- identify: firmware version + EEPROM schema marker +
-        // active sensor count. The dashboard's update checker uses
-        // this to compare against the latest available release, and
-        // uses the schema byte specifically to warn the customer
-        // BEFORE flashing if the update will reset their calibration
-        // (i.e. if the new firmware's schema differs from this one).
-        case 'i': case 'I': PrintIdentify();                    break;
         // "z <sensor> <offset> <count>" -- set LED zone for a sensor
         case 'z': case 'Z': UpdateSensorZone();                 break;
         // "l <sensor> <r> <g> <b>" or "l a <r> <g> <b>" -- set color
@@ -736,6 +719,7 @@ class SerialProcessor {
         // release, gain, button group, release debounce, current live
         // value) -- handy for live tuning UI
         case 'p': case 'P': PrintSensorTuning();                break;
+        case 'i': case 'I': PrintIdentify();                    break;
         case '0' ... '9':   UpdateAndPrintThreshold(bytes_read); // fall through
         default: break;
       }
@@ -1017,6 +1001,29 @@ class SerialProcessor {
     }
     Serial.print("\n");
   }
+  // "i" -- identify: firmware version + EEPROM layout marker + sensor
+  // count + (where available) a per-board unique chip ID. Lets WebFsr
+  // check for updates, warn before an update that would reset saved
+  // calibration, and tell two physically distinct pads apart when both
+  // are connected to the same computer at once.
+  // Format: "i <version> <eeprom_marker_hex> <num_sensors> [<chip_id_hex>]"
+  // The trailing chip ID field is only present on MCUs where a genuine
+  // factory-unique ID is available (currently Teensy 4.x and RP2040) --
+  // see PrintUniqueChipIdIfAvailable() near the top of this file. Omitted
+  // entirely (not even a blank field) rather than faked on other
+  // targets; the dashboard treats a missing field the same as older
+  // firmware that predates this command.
+  void PrintIdentify() {
+    Serial.print("i ");
+    Serial.print(kFirmwareVersion);
+    Serial.print(" ");
+    if (kEepromMarker < 0x10) Serial.print("0");
+    Serial.print(kEepromMarker, HEX);
+    Serial.print(" ");
+    Serial.print(kNumSensors);
+    PrintUniqueChipIdIfAvailable();
+    Serial.print("\n");
+  }
   void LoadThresholdsFromEeprom() { eeprom_processor_.LoadThresholds(); }
 
  private:
@@ -1032,17 +1039,8 @@ unsigned long lastSend = 0;
 long loopTime = -1;
 
 void setup() {
-  // DATA_PIN is a FastLED template parameter, so it has to be a compile-
-  // time constant -- it can't be read from EEPROM at runtime the way
-  // sensor count/zones/colors below are. Some boards in the field have
-  // the LED strip wired to pin 6, others to pin 7. Rather than maintain
-  // two separate firmware builds (and risk someone flashing the wrong
-  // one), we just drive the SAME led data out both pins. Whichever pin
-  // actually has the strip connected shows the real output; the other
-  // pin drives an idle WS2812 bit-stream into an unpopulated header,
-  // which is harmless PROVIDED pins 6 and 7 aren't repurposed for
-  // anything else on either board revision -- confirm that against both
-  // schematics before relying on this for a new board rev.
+  // See the "NOTE ON LED DATA PIN" comment near the top of this file for
+  // why both pins are driven rather than one DATA_PIN constant.
   FastLED.addLeds<WS2812B, 6, GRB>(leds, NUM_LEDS);
   FastLED.addLeds<WS2812B, 7, GRB>(leds, NUM_LEDS);
   FastLED.clear(true);
@@ -1059,6 +1057,8 @@ void setup() {
 
   FastLED.setBrightness(currentBrightness);
   serialProcessor.LoadThresholdsFromEeprom();
+
+
 
   // ADC fast prescaler disabled -- restores default prescaler (128) for
   // cleaner, more accurate reads. Eliminates crosstalk between sensor pins.
