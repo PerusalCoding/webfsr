@@ -652,6 +652,8 @@ export type HeartRateMonitorSectionProps = {
 		setFillHeartIcon: (value: boolean) => void;
 		showBpmText: boolean;
 		setShowBpmText: (value: boolean) => void;
+		showCalories: boolean;
+		setShowCalories: (value: boolean) => void;
 	};
 	onToggle: () => void;
 	connectedHR: boolean;
@@ -728,6 +730,14 @@ export function HeartRateMonitorSection({
 									checked={heartrateSettings.showBpmText}
 									onCheckedChange={heartrateSettings.setShowBpmText}
 									aria-label="Toggle BPM label display"
+								/>
+							</div>
+							<div className="flex items-center justify-between">
+								<span className="text-xs">Show calories burned</span>
+								<Checkbox
+									checked={heartrateSettings.showCalories}
+									onCheckedChange={heartrateSettings.setShowCalories}
+									aria-label="Toggle calories burned display"
 								/>
 							</div>
 						</>
