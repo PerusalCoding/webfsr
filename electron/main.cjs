@@ -378,6 +378,263 @@ function flashFirmware(event, hexBytes) {
   })
 }
 
+// ── Song + heart rate history ────────────────────────────────────────────
+// SongHRLog.lua (itgmania_module/Scripts/) writes one JSON line per played
+// song to <ITGMania root>/Save/AwakenedAnimus/SongHRLog.jsonl. We watch
+// that file and forward its contents to the renderer, which correlates
+// each song's [startTime, endTime] window against heart rate samples it
+// forwards to us (via 'heartrate:sample') and logs to a separate file in
+// this app's own userData dir -- so both survive an app restart.
+const CONFIG_PATH = () => path.join(app.getPath('userData'), 'song-hr-config.json')
+const HR_LOG_PATH = () => path.join(app.getPath('userData'), 'HRLog.jsonl')
+const HR_LOG_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
+let songLogWatcher = null
+
+function loadConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(CONFIG_PATH(), 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+function saveConfig(cfg) {
+  try {
+    fs.mkdirSync(path.dirname(CONFIG_PATH()), { recursive: true })
+    fs.writeFileSync(CONFIG_PATH(), JSON.stringify(cfg, null, 2))
+  } catch (err) {
+    console.error('[song-log] failed to save config:', err)
+  }
+}
+
+function getSongLogPath() {
+  const cfg = loadConfig()
+  if (!cfg.itgManiaRoot) return null
+  return path.join(cfg.itgManiaRoot, 'Save', 'AwakenedAnimus', 'SongHRLog.jsonl')
+}
+
+// Separate from itgManiaRoot above: on a PORTABLE ITGMania install, Save/
+// and Songs/ live together under one folder, so one root would suffice.
+// But on an INSTALLED (non-portable) copy, Save/ lives under
+// %APPDATA%/ITGmania while Songs/Themes/Program live wherever the game
+// was actually installed -- two unrelated folders. itgManiaRoot (above)
+// is always the Save-containing one (needed to find SongHRLog.jsonl);
+// itgManiaInstallRoot is specifically for resolving banner image paths,
+// which are relative to the Songs/ folder.
+function getInstallRoot() {
+  const cfg = loadConfig()
+  return cfg.itgManiaInstallRoot || cfg.itgManiaRoot || null
+}
+
+function readSongLog() {
+  const logPath = getSongLogPath()
+  if (!logPath || !fs.existsSync(logPath)) return []
+
+  try {
+    const content = fs.readFileSync(logPath, 'utf8')
+    const rawLines = content.split(/\r?\n/).filter(Boolean)
+
+    let dirty = false
+    const resolvedLines = []
+    const entries = []
+
+    for (const line of rawLines) {
+      let entry
+      try {
+        entry = JSON.parse(line)
+      } catch {
+        continue
+      }
+
+      // SongHRLog.lua can't produce wall-clock timestamps (some ITGMania
+      // builds don't expose the `os` library to theme Lua at all -- see
+      // the comment in SongHRLog.lua) -- it only writes durationSeconds.
+      // The first time we see an entry like that, stamp it with "now" as
+      // endTime and derive startTime from the duration, then persist that
+      // back to the file so it doesn't drift on every subsequent read.
+      if (entry.endTime === undefined && typeof entry.durationSeconds === 'number') {
+        const nowSeconds = Math.floor(Date.now() / 1000)
+        entry.endTime = nowSeconds
+        entry.startTime = nowSeconds - entry.durationSeconds
+        dirty = true
+      }
+
+      entries.push(entry)
+      resolvedLines.push(JSON.stringify(entry))
+    }
+
+    if (dirty) {
+      try {
+        fs.writeFileSync(logPath, resolvedLines.join('\n') + (resolvedLines.length > 0 ? '\n' : ''))
+      } catch (err) {
+        console.error('[song-log] failed to persist resolved timestamps:', err)
+      }
+    }
+
+    return entries
+  } catch (err) {
+    console.error('[song-log] failed to read log:', err)
+    return []
+  }
+}
+
+function watchSongLog(win) {
+  const logPath = getSongLogPath()
+  if (!logPath) return
+
+  if (songLogWatcher) {
+    songLogWatcher.close()
+    songLogWatcher = null
+  }
+
+  // The Lua module creates the file lazily on first song played -- if it
+  // doesn't exist yet, watch the parent dir instead so we notice once it
+  // shows up, then re-watch the file itself.
+  const dir = path.dirname(logPath)
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+  } catch {
+    // Best effort -- the Lua side will also try to create it.
+  }
+
+  const sendUpdate = () => {
+    win?.webContents.send('song-log:updated', readSongLog())
+  }
+
+  try {
+    songLogWatcher = fs.watch(dir, { persistent: false }, (eventType, filename) => {
+      if (filename === 'SongHRLog.jsonl') sendUpdate()
+    })
+  } catch (err) {
+    console.error('[song-log] failed to watch directory:', err)
+  }
+}
+
+function trimHrLogOnStartup() {
+  const logPath = HR_LOG_PATH()
+  if (!fs.existsSync(logPath)) return
+
+  try {
+    const cutoff = Date.now() - HR_LOG_MAX_AGE_MS
+    const content = fs.readFileSync(logPath, 'utf8')
+    const kept = content
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .filter((line) => {
+        try {
+          const sample = JSON.parse(line)
+          return typeof sample.timestamp === 'number' && sample.timestamp >= cutoff
+        } catch {
+          return false
+        }
+      })
+    fs.writeFileSync(logPath, kept.join('\n') + (kept.length > 0 ? '\n' : ''))
+  } catch (err) {
+    console.error('[hr-log] failed to trim on startup:', err)
+  }
+}
+
+function appendHrSample(sample) {
+  if (!sample || typeof sample.heartrate !== 'number' || typeof sample.timestamp !== 'number') return
+  try {
+    fs.mkdirSync(path.dirname(HR_LOG_PATH()), { recursive: true })
+    fs.appendFileSync(HR_LOG_PATH(), JSON.stringify(sample) + '\n')
+  } catch (err) {
+    console.error('[hr-log] failed to append sample:', err)
+  }
+}
+
+function readHrLog() {
+  const logPath = HR_LOG_PATH()
+  if (!fs.existsSync(logPath)) return []
+
+  try {
+    const content = fs.readFileSync(logPath, 'utf8')
+    return content
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line)
+        } catch {
+          return null
+        }
+      })
+      .filter(Boolean)
+  } catch (err) {
+    console.error('[hr-log] failed to read log:', err)
+    return []
+  }
+}
+
+// ── Song banner image server ─────────────────────────────────────────────
+// SongHRLog.lua logs each song's bannerPath, which is StepMania's *virtual*
+// path (e.g. "/Songs/PackName/SongName/bn.png"), not something the renderer
+// can load directly -- there's no file:// access for arbitrary paths under
+// contextIsolation, and even if there were, cross-origin local file access
+// from the Vite dev server origin would be blocked. So: a tiny local HTTP
+// server, same trick as the OBS static server above, except this one maps
+// requests onto <itgManiaRoot>/<bannerPath> and refuses anything that
+// resolves outside that root (a banner path is untrusted input coming from
+// a log file, so this containment check matters).
+const MEDIA_SERVER_PORT = 47832
+let mediaServer = null
+
+function startMediaServer() {
+  if (mediaServer) return
+
+  mediaServer = http.createServer((req, res) => {
+    try {
+      const root = getInstallRoot()
+      if (!root) {
+        res.writeHead(404)
+        res.end('No ITGMania install folder configured')
+        return
+      }
+
+      const url = new URL(req.url, `http://127.0.0.1:${MEDIA_SERVER_PORT}`)
+      const relPath = url.searchParams.get('path')
+      if (!relPath) {
+        res.writeHead(400)
+        res.end('Missing path')
+        return
+      }
+
+      const resolvedRoot = path.resolve(root)
+      const resolvedTarget = path.resolve(resolvedRoot, '.' + path.sep + relPath.replace(/^[/\\]+/, ''))
+
+      if (!resolvedTarget.startsWith(resolvedRoot)) {
+        res.writeHead(403)
+        res.end('Forbidden')
+        return
+      }
+
+      fs.readFile(resolvedTarget, (err, data) => {
+        if (err) {
+          res.writeHead(404)
+          res.end('Not found')
+          return
+        }
+        const ext = path.extname(resolvedTarget).toLowerCase()
+        const contentType = OBS_MIME_TYPES[ext] || 'application/octet-stream'
+        res.writeHead(200, { 'Content-Type': contentType })
+        res.end(data)
+      })
+    } catch (err) {
+      res.writeHead(500)
+      res.end('Server error')
+    }
+  })
+
+  mediaServer.listen(MEDIA_SERVER_PORT, '127.0.0.1')
+}
+
+function stopMediaServer() {
+  if (!mediaServer) return
+  mediaServer.close()
+  mediaServer = null
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1200,
@@ -420,18 +677,73 @@ function createWindow() {
     }
   })
 
-  // Allow serial permission checks
-  win.webContents.session.setPermissionCheckHandler((webContents, permission) => {
-    return permission === 'serial'
+  // Show a dialog so the user can pick their heart rate monitor.
+  // Electron never shows a Bluetooth device picker on its own -- unlike
+  // Chrome, it requires this handler on webContents.session, or
+  // navigator.bluetooth.requestDevice() in the renderer (see
+  // useHeartrateMonitor.ts) just hangs forever with no UI and no error.
+  //
+  // NOTE: this event can fire multiple times per scan as new BLE
+  // advertisements come in, each time with the full list-so-far -- not
+  // just once. We only resolve the callback once the user actually picks
+  // something (or the outer scan itself is cancelled by the renderer),
+  // so being called again with a longer list before that happens is
+  // expected and not treated as an error.
+  win.webContents.on('select-bluetooth-device', async (event, deviceList, callback) => {
+    console.log(`[bluetooth] select-bluetooth-device fired with ${deviceList.length} device(s):`,
+      deviceList.map((d) => d.deviceName || d.deviceId))
+
+    event.preventDefault()
+
+    if (deviceList.length === 0) {
+      // No devices found yet -- don't resolve the callback. Resolving
+      // with '' here would cancel the whole requestDevice() call the
+      // instant the scan starts, before it's had a chance to find
+      // anything. We just wait for the next update (more devices found)
+      // or for the renderer's own timeout logic to give up.
+      console.log('[bluetooth] deviceList empty -- waiting for next update, NOT calling callback')
+      return
+    }
+
+    console.log('[bluetooth] showing picker dialog now')
+    const buttons = deviceList.map((d) => d.deviceName || d.deviceId)
+    buttons.push('Cancel')
+
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'question',
+      title: 'Select Heart Rate Monitor',
+      message: 'Select your heart rate monitor:',
+      buttons,
+      cancelId: buttons.length - 1,
+    })
+
+    if (response === buttons.length - 1) {
+      console.log('[bluetooth] user clicked Cancel in dialog')
+      callback('')
+    } else {
+      console.log(`[bluetooth] user picked: ${deviceList[response].deviceName || deviceList[response].deviceId}`)
+      callback(deviceList[response].deviceId)
+    }
   })
 
-  // Allow serial device access
+  // Allow serial + bluetooth permission checks
+  win.webContents.session.setPermissionCheckHandler((webContents, permission) => {
+    console.log(`[bluetooth] permission check: ${permission}`)
+    return permission === 'serial' || permission === 'bluetooth'
+  })
+
+  // Allow serial + bluetooth device access
   win.webContents.session.setDevicePermissionHandler((details) => {
-    return details.deviceType === 'serial'
+    console.log(`[bluetooth] device permission check: ${details.deviceType}`)
+    return details.deviceType === 'serial' || details.deviceType === 'bluetooth'
   })
 
   win.on('closed', () => {
     mainWindow = null
+    if (songLogWatcher) {
+      songLogWatcher.close()
+      songLogWatcher = null
+    }
   })
 
   // Load the built Vite app
@@ -480,10 +792,59 @@ ipcMain.handle('updater:install', () => updater?.quitAndInstall())
 ipcMain.handle('updater:skip', (event, version) => updater?.skipVersion(version))
 ipcMain.handle('updater:check-again', () => updater?.checkForUpdates())
 
+// ── IPC: song + heart rate history ───────────────────────────────────────
+ipcMain.handle('song-log:select-folder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Select your ITGMania install folder (the one containing Save/)',
+    properties: ['openDirectory'],
+  })
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { path: null, entries: [] }
+  }
+
+  const itgManiaRoot = result.filePaths[0]
+  saveConfig({ ...loadConfig(), itgManiaRoot })
+  watchSongLog(mainWindow)
+  return { path: itgManiaRoot, entries: readSongLog() }
+})
+
+ipcMain.handle('song-log:get-folder', () => loadConfig().itgManiaRoot || null)
+
+ipcMain.handle('song-log:select-install-folder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Select your ITGMania install folder (the one containing Songs/ and Themes/)',
+    properties: ['openDirectory'],
+  })
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null
+  }
+
+  const itgManiaInstallRoot = result.filePaths[0]
+  saveConfig({ ...loadConfig(), itgManiaInstallRoot })
+  return itgManiaInstallRoot
+})
+
+ipcMain.handle('song-log:get-install-folder', () => getInstallRoot())
+
+ipcMain.handle('song-log:get-all', () => readSongLog())
+
+ipcMain.handle('song-log:get-media-base-url', () => `http://127.0.0.1:${MEDIA_SERVER_PORT}`)
+
+ipcMain.on('heartrate:sample', (event, sample) => {
+  appendHrSample(sample)
+})
+
+ipcMain.handle('heartrate:get-samples', () => readHrLog())
+
 app.whenReady().then(() => {
   createWindow()
   startItgManiaBridge()
   startObsStaticServer()
+  startMediaServer()
+  trimHrLogOnStartup()
+  watchSongLog(mainWindow)
 
   updater = setupAutoUpdater(mainWindow)
   updater.checkForUpdates()
@@ -493,5 +854,6 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   stopItgManiaBridge()
   stopObsStaticServer()
+  stopMediaServer()
   if (process.platform !== 'darwin') app.quit()
 })

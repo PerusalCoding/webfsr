@@ -12,17 +12,23 @@ import MobileDashboard from "~/components/MobileDashboard";
 import { OBSComponentDialog } from "~/components/OBSComponentDialog";
 import PairingQRModal from "~/components/PairingQRModal";
 import SensorBar from "~/components/SensorBar";
+import { SongHistorySection } from "~/components/SongHistorySection";
 import TimeSeriesGraph from "~/components/TimeSeriesGraph";
 import UpdateModal from "~/components/UpdateModal";
 import { Button } from "~/components/ui/button";
 import { CustomScrollArea } from "~/components/ui/custom-scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
+import { estimateCalories } from "~/lib/calorieEstimate";
+import { useBiometrics } from "~/lib/useBiometrics";
 import { useHeartrateMonitor } from "~/lib/useHeartrateMonitor";
+import { useHypeRateHeartrateMonitor } from "~/lib/useHypeRateHeartrateMonitor";
+import { useHypeRateSessionId } from "~/lib/useHypeRateSessionId";
 import { type ObsBroadcastPayload, useOBS } from "~/lib/useOBS";
 import { type ProfileData, useProfileManager } from "~/lib/useProfileManager";
 import { usePWAInstall } from "~/lib/usePWAInstall";
 import { useLastCode, useRemoteControl } from "~/lib/useRemoteControl";
 import { useSerialPort } from "~/lib/useSerialPort";
+import { useSongHistory } from "~/lib/useSongHistory";
 import { useTheme } from "~/lib/useTheme";
 import { useSensorCount } from "~/store/dataStore";
 import type { DesktopMessage, MobileMessage, ProfileSyncPayload } from "~/store/remoteStore";
@@ -2332,6 +2338,8 @@ const Dashboard = () => {
 	const heartrateSettings = useHeartrateSettings();
 	const generalSettings = useGeneralSettings();
 	const { updateAllSettings, getAllSettings } = useSettingsBulkActions();
+	const songHistory = useSongHistory();
+	const { biometrics, setBiometrics } = useBiometrics();
 
 	// Rate limit for the ITGMania overlay bridge -- separate from OBS/remote
 	// since the overlay wants to feel instant (high rate) but we still don't
@@ -2415,13 +2423,79 @@ const Dashboard = () => {
 	const {
 		connect: connectHR,
 		disconnect: disconnectHR,
-		heartrateData,
-		isConnected: connectedHR,
-		isConnecting: connectingHR,
-		error: heartrateError,
+		heartrateData: bluetoothHeartrateData,
+		isConnected: bluetoothConnectedHR,
+		isConnecting: bluetoothConnectingHR,
+		error: bluetoothHeartrateError,
 		isSupported: isBluetoothSupported,
 		device: heartrateDevice,
 	} = useHeartrateMonitor();
+
+	const {
+		sessionId: hyperateSessionId,
+		setSessionId: setHyperateSessionId,
+		clearSessionId: clearHyperateSessionId,
+	} = useHypeRateSessionId();
+	const {
+		connect: connectHypeRate,
+		disconnect: disconnectHypeRate,
+		heartrateData: hyperateHeartrateData,
+		isConnected: hyperateConnected,
+		isConnecting: hyperateConnecting,
+		error: hyperateError,
+	} = useHypeRateHeartrateMonitor(hyperateSessionId);
+
+	// Everywhere else in the app (heart icon, OBS broadcast, song history
+	// correlation) just wants "the current heart rate," regardless of
+	// source -- so these merged names are what the rest of the file
+	// continues to use unchanged. HypeRate wins if both happen to be
+	// connected, since connecting it is a deliberate action the user just
+	// took. HeartRateMonitorSection below still gets the raw Bluetooth-only
+	// values, since that panel is specifically about the Bluetooth device.
+	const heartrateData = hyperateConnected ? hyperateHeartrateData : bluetoothHeartrateData;
+	const connectedHR = hyperateConnected || bluetoothConnectedHR;
+	const connectingHR = hyperateConnecting || bluetoothConnectingHR;
+	const heartrateError = hyperateConnected ? hyperateError : bluetoothHeartrateError;
+
+	// Forward every new HR sample to the song history log so it can be
+	// correlated against played songs (see SongHRLog.lua / useSongHistory.ts).
+	useEffect(() => {
+		if (heartrateData) {
+			songHistory.recordHeartrateSample(heartrateData.heartrate, heartrateData.timestamp);
+		}
+	}, [heartrateData, songHistory]);
+
+	// Running average HR + elapsed session duration, fed into Keytel et
+	// al.'s regression (see calorieEstimate.ts) -- calorie burn depends on
+	// sustained HR over time, not a single instantaneous reading, so a
+	// fresh session starts averaging over whenever HR first connects and
+	// resets the moment it disconnects.
+	const hrSumRef = useRef(0);
+	const hrCountRef = useRef(0);
+	const hrSessionStartRef = useRef<number | null>(null);
+	const [caloriesBurned, setCaloriesBurned] = useState<number | null>(null);
+
+	useEffect(() => {
+		if (!connectedHR) {
+			hrSumRef.current = 0;
+			hrCountRef.current = 0;
+			hrSessionStartRef.current = null;
+			setCaloriesBurned(null);
+			return;
+		}
+		if (!heartrateData) return;
+
+		if (hrSessionStartRef.current === null) {
+			hrSessionStartRef.current = heartrateData.timestamp;
+		}
+		hrSumRef.current += heartrateData.heartrate;
+		hrCountRef.current += 1;
+
+		const avgHeartrate = hrSumRef.current / hrCountRef.current;
+		const durationSeconds = (heartrateData.timestamp - hrSessionStartRef.current) / 1000;
+
+		setCaloriesBurned(estimateCalories(avgHeartrate, durationSeconds, biometrics));
+	}, [connectedHR, heartrateData, biometrics]);
 
 	const {
 		profiles,
@@ -2545,9 +2619,33 @@ const Dashboard = () => {
 	// that legacy command -- otherwise it silently undoes the Advanced
 	// tuning the moment the main page is touched.
 	const [advancedTuningEnabled, setAdvancedTuningEnabled] = useState<boolean>(loadAdvancedMode);
-	const [mainTab, setMainTab] = useState<"sensors" | "leds">("sensors");
+	const [mainTab, setMainTab] = useState<"sensors" | "leds" | "songs">("sensors");
 	const toggleAdvancedTuningMode = useStableCallback(() => {
 		const next = !advancedTuningEnabled;
+		// Going from Advanced -> Basic: the basic model's `thresholds`
+		// array is completely separate state from Advanced's
+		// `liveTriggerValues` and nothing normally keeps them in sync.
+		// Without this handoff, turning Sensor Tuning off either sends
+		// nothing (thresholds still empty, if the basic slider was never
+		// touched) or overwrites the real tuned trigger with a stale/
+		// default value (often 512) -- and in the "sends nothing" case
+		// the firmware is left running on whatever Release value Advanced
+		// mode last set, indefinitely, even though the user believes
+		// they're back to Trigger-only control. Seeding thresholds from
+		// the live trigger values here means the very next
+		// sendAllThresholds() (fired by the effect watching
+		// advancedTuningEnabled) pushes the real current trigger through
+		// the legacy "0 <sensor> <val>" path, which firmware-side
+		// re-derives Release from Trigger automatically.
+		if (advancedTuningEnabled && !next && liveTriggerValues.length) {
+			setThresholds((prev) => {
+				const next = [...prev];
+				liveTriggerValues.forEach((v, i) => {
+					if (typeof v === "number") next[i] = v;
+				});
+				return next;
+			});
+		}
 		setAdvancedTuningEnabled(next);
 		saveAdvancedMode(next);
 	});
@@ -3553,6 +3651,46 @@ const Dashboard = () => {
 								heartrateDevice={heartrateDevice}
 							/>
 
+							{/* Alternative HR source: HypeRate (phone app streams heart rate over
+							    the internet, avoiding WebBluetooth/Windows BLE stack issues).
+							    No login/token needed -- just a free Session ID from the app. */}
+							<div className="p-3 border rounded bg-white dark:bg-neutral-900 space-y-2">
+								<div className="text-sm font-medium">HypeRate (phone HR)</div>
+								<input
+									type="text"
+									value={hyperateSessionId}
+									onChange={(e) => setHyperateSessionId(e.target.value)}
+									placeholder="HypeRate Session ID"
+									className="w-full px-2 py-1 text-sm rounded border bg-transparent"
+									disabled={hyperateConnected}
+								/>
+								<Button
+									onClick={() => (hyperateConnected ? disconnectHypeRate() : connectHypeRate())}
+									className="w-full gap-2"
+									disabled={hyperateConnecting || (!hyperateConnected && !hyperateSessionId.trim())}
+								>
+									{hyperateConnecting ? "Connecting…" : hyperateConnected ? "Disconnect HypeRate" : "Connect HypeRate"}
+								</Button>
+								{hyperateSessionId && (
+									<Button
+										variant="outline"
+										size="sm"
+										onClick={() => {
+											if (hyperateConnected) disconnectHypeRate();
+											clearHyperateSessionId();
+										}}
+										className="w-full text-xs"
+									>
+										Forget Session ID
+									</Button>
+								)}
+								<div className="text-xs text-gray-500">
+									Open the free HypeRate app on your phone, connect your HR monitor, and copy the Session ID from
+									Settings -- no account or token needed.
+								</div>
+								{hyperateError && <div className="text-sm text-destructive">{hyperateError}</div>}
+							</div>
+
 							<VisualSettingsSection
 								numSensors={numSensors}
 								sensorLabels={sensorLabels}
@@ -3621,10 +3759,36 @@ const Dashboard = () => {
 						>
 							LEDs
 						</button>
+						<button
+							type="button"
+							onClick={() => setMainTab("songs")}
+							className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+								mainTab === "songs"
+									? "border-foreground text-foreground"
+									: "border-transparent text-muted-foreground hover:text-foreground"
+							}`}
+						>
+							HR/Songs stats
+						</button>
 					</div>
 
 					{mainTab === "leds" ? (
 						<LedPadPreview />
+					) : mainTab === "songs" ? (
+						<div className="flex-1 min-h-0 overflow-y-auto">
+							<SongHistorySection
+								songs={songHistory.songs}
+								hrSamples={songHistory.hrSamples}
+								folder={songHistory.folder}
+								installFolder={songHistory.installFolder}
+								mediaBaseUrl={songHistory.mediaBaseUrl}
+								isSupported={songHistory.isSupported}
+								selectFolder={songHistory.selectFolder}
+								selectInstallFolder={songHistory.selectInstallFolder}
+								biometrics={biometrics}
+								setBiometrics={setBiometrics}
+							/>
+						</div>
 					) : (
 					<>
 					{latestData ? (
@@ -3677,6 +3841,9 @@ const Dashboard = () => {
 														{heartrateData.heartrate}
 													</p>
 													{heartrateSettings.showBpmText && <p className="text-lg text-muted-foreground mt-1">BPM</p>}
+													{heartrateSettings.showCalories && caloriesBurned !== null && (
+														<p className="text-lg text-muted-foreground mt-1">🔥 {caloriesBurned} kcal</p>
+													)}
 												</div>
 											) : (
 												<p className="text-muted-foreground text-center text-lg">
@@ -3758,6 +3925,9 @@ const Dashboard = () => {
 														{heartrateData.heartrate}
 													</p>
 													{heartrateSettings.showBpmText && <p className="text-lg text-muted-foreground mt-1">BPM</p>}
+													{heartrateSettings.showCalories && caloriesBurned !== null && (
+														<p className="text-lg text-muted-foreground mt-1">🔥 {caloriesBurned} kcal</p>
+													)}
 												</div>
 											) : (
 												<p className="text-muted-foreground text-center text-lg">
