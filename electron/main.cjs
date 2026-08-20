@@ -578,6 +578,14 @@ function readHrLog() {
 // resolves outside that root (a banner path is untrusted input coming from
 // a log file, so this containment check matters).
 const MEDIA_SERVER_PORT = 47832
+const MEDIA_MIME_TYPES = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+}
 let mediaServer = null
 
 function startMediaServer() {
@@ -616,7 +624,7 @@ function startMediaServer() {
           return
         }
         const ext = path.extname(resolvedTarget).toLowerCase()
-        const contentType = OBS_MIME_TYPES[ext] || 'application/octet-stream'
+        const contentType = MEDIA_MIME_TYPES[ext] || 'application/octet-stream'
         res.writeHead(200, { 'Content-Type': contentType })
         res.end(data)
       })
