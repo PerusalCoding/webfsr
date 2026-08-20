@@ -7,6 +7,8 @@ import {
 	type HeartrateHistoryAxisSide,
 	type HeartrateSample,
 } from "~/components/HeartrateDisplay";
+import { estimateCalories } from "~/lib/calorieEstimate";
+import { useBiometrics } from "~/lib/useBiometrics";
 import { type ObsBroadcastPayload, useOBS } from "~/lib/useOBS";
 
 type HeartrateMode = "current" | "graph";
@@ -17,6 +19,7 @@ type HeartrateOBSConfig = {
 	showBpmText: boolean;
 	showHeartVisual: boolean;
 	showBorder: boolean;
+	showCalories: boolean;
 	timeWindow: number;
 	containerBackgroundColor: string;
 	heartColor: string;
@@ -42,6 +45,7 @@ const DEFAULT_CONFIG: HeartrateOBSConfig = {
 	showBpmText: true,
 	showHeartVisual: true,
 	showBorder: false,
+	showCalories: false,
 	timeWindow: 30,
 	containerBackgroundColor: "rgba(0, 0, 0, 0.35)",
 	heartColor: "rgba(239, 68, 68, 1)",
@@ -79,6 +83,7 @@ function parseQueryConfig(): HeartrateOBSConfig {
 		showBpmText: params.get("showBpmText") !== "false",
 		showHeartVisual: params.get("showHeart") !== "false",
 		showBorder: borderParam == null ? DEFAULT_CONFIG.showBorder : borderParam !== "false",
+		showCalories: params.get("showCalories") === "true",
 		timeWindow: Number(params.get("window")) || DEFAULT_CONFIG.timeWindow,
 		containerBackgroundColor: params.get("containerBgColor") || DEFAULT_CONFIG.containerBackgroundColor,
 		heartColor: params.get("heartColor") || DEFAULT_CONFIG.heartColor,
@@ -103,6 +108,11 @@ function HeartrateOBSComponent() {
 	const [history, setHistory] = useState<HeartrateSample[]>([]);
 	const [heartrateConnected, setHeartrateConnected] = useState(false);
 	const lastTimestampRef = useRef<number | null>(null);
+	const { biometrics } = useBiometrics();
+	const [calories, setCalories] = useState<number | null>(null);
+	const sessionStartRef = useRef<number | null>(null);
+	const sumHeartrateRef = useRef(0);
+	const sampleCountRef = useRef(0);
 
 	useEffect(() => {
 		if (!pwd) return;
@@ -134,6 +144,19 @@ function HeartrateOBSComponent() {
 					const retentionMs = getHeartrateHistoryRetentionMs(config.timeWindow);
 					return [...prev, sample].filter((entry) => entry.timestamp >= timestamp - retentionMs);
 				});
+
+				// Running kcal estimate for the OBS overlay -- same
+				// Keytel et al. formula the sidebar uses, fed a running
+				// average HR over the elapsed session so it stays stable
+				// (a single-sample average would make the number jump
+				// around every time a new BPM reading comes in).
+				if (sessionStartRef.current == null) sessionStartRef.current = timestamp;
+				sumHeartrateRef.current += sample.heartrate;
+				sampleCountRef.current += 1;
+				const avgHeartrate = sumHeartrateRef.current / sampleCountRef.current;
+				const durationSeconds = (timestamp - sessionStartRef.current) / 1000;
+				const kcal = estimateCalories(avgHeartrate, durationSeconds, biometrics);
+				if (kcal != null) setCalories(kcal);
 			} catch {
 				// ignore malformed events
 			}
@@ -205,6 +228,8 @@ function HeartrateOBSComponent() {
 					textColor={config.textColor}
 					isLive={heartrateConnected}
 					statusText={statusText}
+					showCalories={config.showCalories}
+					calories={calories}
 				/>
 			)}
 		</div>

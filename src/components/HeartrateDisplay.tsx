@@ -1,4 +1,4 @@
-import { Heart } from "lucide-react";
+import { Flame, Heart } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
 type HeartrateCurrentDisplayProps = {
@@ -13,6 +13,8 @@ type HeartrateCurrentDisplayProps = {
 	heartColor?: string;
 	heartBackgroundColor?: string;
 	textColor?: string;
+	showCalories?: boolean;
+	calories?: number | null;
 };
 
 export interface HeartrateSample {
@@ -63,6 +65,8 @@ const CURRENT_DISPLAY_HEART_ICON_SIZE = 84;
 const CURRENT_DISPLAY_BPM_FONT_SIZE = 220;
 const CURRENT_DISPLAY_BPM_LABEL_FONT_SIZE = 24;
 const CURRENT_DISPLAY_STATUS_FONT_SIZE = 22;
+const CURRENT_DISPLAY_CALORIES_FONT_SIZE = 24;
+const CURRENT_DISPLAY_CALORIES_ICON_SIZE = 22;
 const CURRENT_DISPLAY_STATUS_MAX_WIDTH = 680;
 const CURRENT_DISPLAY_BPM_PLACEHOLDER = "888";
 
@@ -178,6 +182,8 @@ export function HeartrateCurrentDisplay({
 	heartColor = DEFAULT_HEART_COLOR,
 	heartBackgroundColor = DEFAULT_HEART_BACKGROUND_COLOR,
 	textColor = DEFAULT_TEXT_COLOR,
+	showCalories = false,
+	calories = null,
 }: HeartrateCurrentDisplayProps) {
 	const animationDuration =
 		!heartrate || !animateHeartbeat
@@ -269,6 +275,17 @@ export function HeartrateCurrentDisplay({
 							)}
 						</div>
 					</div>
+					{showCalories && calories != null && (
+						<div className="flex items-center justify-center gap-2" style={{ color: textColor, opacity: 0.8 }}>
+							<Flame
+								fill="currentColor"
+								style={{ height: CURRENT_DISPLAY_CALORIES_ICON_SIZE, width: CURRENT_DISPLAY_CALORIES_ICON_SIZE }}
+							/>
+							<span className="font-semibold tabular-nums" style={{ fontSize: CURRENT_DISPLAY_CALORIES_FONT_SIZE }}>
+								{calories} kcal
+							</span>
+						</div>
+					)}
 					{statusText && (
 						<p
 							className="text-balance"

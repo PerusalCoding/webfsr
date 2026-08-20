@@ -67,6 +67,7 @@ interface HeartrateConfig {
 	showBpmText: boolean;
 	showHeartVisual: boolean;
 	showBorder: boolean;
+	showCalories: boolean;
 	timeWindow: number;
 	containerBackgroundColor: string;
 	heartColor: string;
@@ -247,6 +248,7 @@ const DEFAULT_CONFIGS = {
 		showBpmText: true,
 		showHeartVisual: true,
 		showBorder: false,
+		showCalories: false,
 		timeWindow: 30,
 		containerBackgroundColor: "rgba(0, 0, 0, 0.35)",
 		heartColor: "rgba(239, 68, 68, 1)",
@@ -565,6 +567,7 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 			if (heartrateConfig.showBorder !== DEFAULT_CONFIGS.heartrate.showBorder) {
 				params.set("border", heartrateConfig.showBorder ? "true" : "false");
 			}
+			if (heartrateConfig.showCalories) params.set("showCalories", "true");
 			if (heartrateConfig.timeWindow !== DEFAULT_CONFIGS.heartrate.timeWindow) {
 				params.set("window", heartrateConfig.timeWindow.toString());
 			}
@@ -745,6 +748,7 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 				heartrateConfig.showHeartVisual = params.get("showHeart") !== "false";
 				heartrateConfig.showBorder =
 					params.get("border") == null ? DEFAULT_CONFIGS.heartrate.showBorder : params.get("border") !== "false";
+				heartrateConfig.showCalories = params.get("showCalories") === "true";
 
 				const heartrateWindow = params.get("window");
 				if (heartrateWindow) heartrateConfig.timeWindow = Number(heartrateWindow);
@@ -901,6 +905,8 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 						heartBackgroundColor={heartrateConfig.heartBackgroundColor}
 						textColor={heartrateConfig.textColor}
 						isLive={true}
+						showCalories={heartrateConfig.showCalories}
+						calories={128}
 					/>
 				)}
 			</div>
@@ -1672,6 +1678,20 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 													/>
 													<Label htmlFor="hrShowBorder" className="cursor-pointer">
 														Show border
+													</Label>
+												</div>
+												<div className="flex items-center space-x-2">
+													<Checkbox
+														id="hrShowCalories"
+														checked={(config as HeartrateConfig).showCalories}
+														onCheckedChange={(checked) =>
+															updateHeartrateConfig({
+																showCalories: Boolean(checked),
+															})
+														}
+													/>
+													<Label htmlFor="hrShowCalories" className="cursor-pointer">
+														Show calories burned
 													</Label>
 												</div>
 											</>
