@@ -69,3 +69,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Manually re-triggers a check (e.g. the "Try Again" button after an error).
   checkForUpdatesAgain: () => ipcRenderer.invoke('updater:check-again'),
 })
+
+// ── Song history + heart rate (HR/Songs stats tab) ───────────────────────
+// Separate exposeInMainWorld key from electronAPI above, matching the
+// existing convention of splitting concerns (see itgManiaBridge in
+// dashboard.tsx) rather than growing electronAPI indefinitely.
+contextBridge.exposeInMainWorld('songHistoryBridge', {
+  selectFolder: () => ipcRenderer.invoke('song-log:select-folder'),
+  getFolder: () => ipcRenderer.invoke('song-log:get-folder'),
+  selectInstallFolder: () => ipcRenderer.invoke('song-log:select-install-folder'),
+  getInstallFolder: () => ipcRenderer.invoke('song-log:get-install-folder'),
+  getAllSongs: () => ipcRenderer.invoke('song-log:get-all'),
+  onSongLogUpdate: (callback) => {
+    const listener = (_event, entries) => callback(entries)
+    ipcRenderer.on('song-log:updated', listener)
+    return () => ipcRenderer.removeListener('song-log:updated', listener)
+  },
+  sendHeartrateSample: (sample) => ipcRenderer.send('heartrate:sample', sample),
+  getAllHeartrateSamples: () => ipcRenderer.invoke('heartrate:get-samples'),
+  getMediaBaseUrl: () => ipcRenderer.invoke('song-log:get-media-base-url'),
+})

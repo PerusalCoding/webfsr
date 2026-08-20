@@ -30,6 +30,7 @@ interface SettingsState {
 	fillHeartIcon: boolean;
 	showBpmText: boolean;
 	animateHeartbeat: boolean;
+	showCalories: boolean;
 
 	// General settings
 	lockThresholds: boolean;
@@ -62,6 +63,7 @@ interface SettingsState {
 	setFillHeartIcon: (fill: boolean) => void;
 	setShowBpmText: (show: boolean) => void;
 	setAnimateHeartbeat: (animate: boolean) => void;
+	setShowCalories: (show: boolean) => void;
 
 	setLockThresholds: (lock: boolean) => void;
 	setPollingRate: (rate: number) => void;
@@ -99,6 +101,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
 	fillHeartIcon: DEFAULT_PROFILE.fillHeartIcon,
 	showBpmText: DEFAULT_PROFILE.showBpmText,
 	animateHeartbeat: DEFAULT_PROFILE.animateHeartbeat,
+	showCalories: DEFAULT_PROFILE.showCalories ?? true,
 
 	lockThresholds: DEFAULT_PROFILE.lockThresholds,
 	pollingRate: DEFAULT_PROFILE.pollingRate,
@@ -130,6 +133,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
 	setFillHeartIcon: (fill) => set({ fillHeartIcon: fill }),
 	setShowBpmText: (show) => set({ showBpmText: show }),
 	setAnimateHeartbeat: (animate) => set({ animateHeartbeat: animate }),
+	setShowCalories: (show) => set({ showCalories: show }),
 
 	setLockThresholds: (lock) => set({ lockThresholds: lock }),
 	setPollingRate: (rate) => set({ pollingRate: rate }),
@@ -164,6 +168,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
 			fillHeartIcon: DEFAULT_PROFILE.fillHeartIcon,
 			showBpmText: DEFAULT_PROFILE.showBpmText,
 			animateHeartbeat: DEFAULT_PROFILE.animateHeartbeat,
+			showCalories: DEFAULT_PROFILE.showCalories ?? true,
 
 			lockThresholds: DEFAULT_PROFILE.lockThresholds,
 			pollingRate: DEFAULT_PROFILE.pollingRate,
@@ -269,6 +274,8 @@ export const useHeartrateSettings = () => {
 	const setShowBpmText = useSettingsStore((state) => state.setShowBpmText);
 	const animateHeartbeat = useSettingsStore((state) => state.animateHeartbeat);
 	const setAnimateHeartbeat = useSettingsStore((state) => state.setAnimateHeartbeat);
+	const showCalories = useSettingsStore((state) => state.showCalories);
+	const setShowCalories = useSettingsStore((state) => state.setShowCalories);
 
 	return {
 		showHeartrateMonitor,
@@ -281,6 +288,8 @@ export const useHeartrateSettings = () => {
 		setShowBpmText,
 		animateHeartbeat,
 		setAnimateHeartbeat,
+		showCalories,
+		setShowCalories,
 	};
 };
 
@@ -337,6 +346,7 @@ export const useSettingsBulkActions = () => {
 		fillHeartIcon: state.fillHeartIcon,
 		showBpmText: state.showBpmText,
 		animateHeartbeat: state.animateHeartbeat,
+		showCalories: state.showCalories,
 		pollingRate: state.pollingRate,
 		useUnthrottledPolling: state.useUnthrottledPolling,
 		obsSendRate: state.obsSendRate,
