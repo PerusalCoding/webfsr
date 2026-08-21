@@ -20,6 +20,13 @@ type HeartrateOBSConfig = {
 	showHeartVisual: boolean;
 	showBorder: boolean;
 	showCalories: boolean;
+	calorieGoal: number | null;
+	zoneColorsEnabled: boolean;
+	zoneLowMax: number;
+	zoneMidMax: number;
+	zoneLowColor: string;
+	zoneMidColor: string;
+	zoneHighColor: string;
 	timeWindow: number;
 	containerBackgroundColor: string;
 	heartColor: string;
@@ -46,6 +53,13 @@ const DEFAULT_CONFIG: HeartrateOBSConfig = {
 	showHeartVisual: true,
 	showBorder: false,
 	showCalories: false,
+	calorieGoal: null,
+	zoneColorsEnabled: false,
+	zoneLowMax: 120,
+	zoneMidMax: 160,
+	zoneLowColor: "rgba(96, 165, 250, 1)",
+	zoneMidColor: "rgba(250, 204, 21, 1)",
+	zoneHighColor: "rgba(239, 68, 68, 1)",
 	timeWindow: 30,
 	containerBackgroundColor: "rgba(0, 0, 0, 0.35)",
 	heartColor: "rgba(239, 68, 68, 1)",
@@ -84,6 +98,13 @@ function parseQueryConfig(): HeartrateOBSConfig {
 		showHeartVisual: params.get("showHeart") !== "false",
 		showBorder: borderParam == null ? DEFAULT_CONFIG.showBorder : borderParam !== "false",
 		showCalories: params.get("showCalories") === "true",
+		calorieGoal: params.get("calorieGoal") ? Math.max(1, Number(params.get("calorieGoal")) || 0) || null : null,
+		zoneColorsEnabled: params.get("zoneColors") === "true",
+		zoneLowMax: Number(params.get("zoneLowMax")) || DEFAULT_CONFIG.zoneLowMax,
+		zoneMidMax: Number(params.get("zoneMidMax")) || DEFAULT_CONFIG.zoneMidMax,
+		zoneLowColor: params.get("zoneLowColor") || DEFAULT_CONFIG.zoneLowColor,
+		zoneMidColor: params.get("zoneMidColor") || DEFAULT_CONFIG.zoneMidColor,
+		zoneHighColor: params.get("zoneHighColor") || DEFAULT_CONFIG.zoneHighColor,
 		timeWindow: Number(params.get("window")) || DEFAULT_CONFIG.timeWindow,
 		containerBackgroundColor: params.get("containerBgColor") || DEFAULT_CONFIG.containerBackgroundColor,
 		heartColor: params.get("heartColor") || DEFAULT_CONFIG.heartColor,
@@ -113,6 +134,9 @@ function HeartrateOBSComponent() {
 	const sessionStartRef = useRef<number | null>(null);
 	const sumHeartrateRef = useRef(0);
 	const sampleCountRef = useRef(0);
+	const [goalReached, setGoalReached] = useState(false);
+	const goalAlreadyCelebratedRef = useRef(false);
+	const goalResetTimeoutRef = useRef<number | null>(null);
 
 	useEffect(() => {
 		if (!pwd) return;
@@ -156,14 +180,39 @@ function HeartrateOBSComponent() {
 				const avgHeartrate = sumHeartrateRef.current / sampleCountRef.current;
 				const durationSeconds = (timestamp - sessionStartRef.current) / 1000;
 				const kcal = estimateCalories(avgHeartrate, durationSeconds, biometrics);
-				if (kcal != null) setCalories(kcal);
+				if (kcal != null) {
+					setCalories(kcal);
+
+					// Fire the goal-reached celebration exactly once per
+					// session (not every sample after crossing, and not
+					// again if kcal dips back down from a recalculated
+					// average) -- goalAlreadyCelebratedRef latches on the
+					// first crossing for the lifetime of this page load.
+					if (
+						config.calorieGoal != null &&
+						config.calorieGoal > 0 &&
+						kcal >= config.calorieGoal &&
+						!goalAlreadyCelebratedRef.current
+					) {
+						goalAlreadyCelebratedRef.current = true;
+						setGoalReached(true);
+						if (goalResetTimeoutRef.current != null) window.clearTimeout(goalResetTimeoutRef.current);
+						goalResetTimeoutRef.current = window.setTimeout(() => setGoalReached(false), 3400);
+					}
+				}
 			} catch {
 				// ignore malformed events
 			}
 		});
 
 		return unmount;
-	}, [addCustomEventListener, config.timeWindow]);
+	}, [addCustomEventListener, config.timeWindow, config.calorieGoal]);
+
+	useEffect(() => {
+		return () => {
+			if (goalResetTimeoutRef.current != null) window.clearTimeout(goalResetTimeoutRef.current);
+		};
+	}, []);
 
 	useEffect(() => {
 		setHistory((prev) => {
@@ -230,6 +279,14 @@ function HeartrateOBSComponent() {
 					statusText={statusText}
 					showCalories={config.showCalories}
 					calories={calories}
+					calorieGoal={config.calorieGoal}
+					goalReached={goalReached}
+					zoneColorsEnabled={config.zoneColorsEnabled}
+					zoneLowMax={config.zoneLowMax}
+					zoneMidMax={config.zoneMidMax}
+					zoneLowColor={config.zoneLowColor}
+					zoneMidColor={config.zoneMidColor}
+					zoneHighColor={config.zoneHighColor}
 				/>
 			)}
 		</div>

@@ -68,6 +68,13 @@ interface HeartrateConfig {
 	showHeartVisual: boolean;
 	showBorder: boolean;
 	showCalories: boolean;
+	calorieGoal: number | null;
+	zoneColorsEnabled: boolean;
+	zoneLowMax: number;
+	zoneMidMax: number;
+	zoneLowColor: string;
+	zoneMidColor: string;
+	zoneHighColor: string;
 	timeWindow: number;
 	containerBackgroundColor: string;
 	heartColor: string;
@@ -249,6 +256,13 @@ const DEFAULT_CONFIGS = {
 		showHeartVisual: true,
 		showBorder: false,
 		showCalories: false,
+		calorieGoal: null,
+		zoneColorsEnabled: false,
+		zoneLowMax: 120,
+		zoneMidMax: 160,
+		zoneLowColor: "rgba(96, 165, 250, 1)",
+		zoneMidColor: "rgba(250, 204, 21, 1)",
+		zoneHighColor: "rgba(239, 68, 68, 1)",
 		timeWindow: 30,
 		containerBackgroundColor: "rgba(0, 0, 0, 0.35)",
 		heartColor: "rgba(239, 68, 68, 1)",
@@ -568,6 +582,27 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 				params.set("border", heartrateConfig.showBorder ? "true" : "false");
 			}
 			if (heartrateConfig.showCalories) params.set("showCalories", "true");
+			if (heartrateConfig.calorieGoal != null && heartrateConfig.calorieGoal > 0) {
+				params.set("calorieGoal", String(heartrateConfig.calorieGoal));
+			}
+			if (heartrateConfig.zoneColorsEnabled) {
+				params.set("zoneColors", "true");
+				if (heartrateConfig.zoneLowMax !== DEFAULT_CONFIGS.heartrate.zoneLowMax) {
+					params.set("zoneLowMax", String(heartrateConfig.zoneLowMax));
+				}
+				if (heartrateConfig.zoneMidMax !== DEFAULT_CONFIGS.heartrate.zoneMidMax) {
+					params.set("zoneMidMax", String(heartrateConfig.zoneMidMax));
+				}
+				if (heartrateConfig.zoneLowColor !== DEFAULT_CONFIGS.heartrate.zoneLowColor) {
+					params.set("zoneLowColor", heartrateConfig.zoneLowColor);
+				}
+				if (heartrateConfig.zoneMidColor !== DEFAULT_CONFIGS.heartrate.zoneMidColor) {
+					params.set("zoneMidColor", heartrateConfig.zoneMidColor);
+				}
+				if (heartrateConfig.zoneHighColor !== DEFAULT_CONFIGS.heartrate.zoneHighColor) {
+					params.set("zoneHighColor", heartrateConfig.zoneHighColor);
+				}
+			}
 			if (heartrateConfig.timeWindow !== DEFAULT_CONFIGS.heartrate.timeWindow) {
 				params.set("window", heartrateConfig.timeWindow.toString());
 			}
@@ -749,6 +784,13 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 				heartrateConfig.showBorder =
 					params.get("border") == null ? DEFAULT_CONFIGS.heartrate.showBorder : params.get("border") !== "false";
 				heartrateConfig.showCalories = params.get("showCalories") === "true";
+				heartrateConfig.calorieGoal = params.get("calorieGoal") ? Math.max(1, Number(params.get("calorieGoal")) || 0) || null : null;
+				heartrateConfig.zoneColorsEnabled = params.get("zoneColors") === "true";
+				heartrateConfig.zoneLowMax = Number(params.get("zoneLowMax")) || DEFAULT_CONFIGS.heartrate.zoneLowMax;
+				heartrateConfig.zoneMidMax = Number(params.get("zoneMidMax")) || DEFAULT_CONFIGS.heartrate.zoneMidMax;
+				heartrateConfig.zoneLowColor = params.get("zoneLowColor") || DEFAULT_CONFIGS.heartrate.zoneLowColor;
+				heartrateConfig.zoneMidColor = params.get("zoneMidColor") || DEFAULT_CONFIGS.heartrate.zoneMidColor;
+				heartrateConfig.zoneHighColor = params.get("zoneHighColor") || DEFAULT_CONFIGS.heartrate.zoneHighColor;
 
 				const heartrateWindow = params.get("window");
 				if (heartrateWindow) heartrateConfig.timeWindow = Number(heartrateWindow);
@@ -907,6 +949,14 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 						isLive={true}
 						showCalories={heartrateConfig.showCalories}
 						calories={128}
+						calorieGoal={heartrateConfig.calorieGoal}
+						goalReached={heartrateConfig.calorieGoal != null && heartrateConfig.calorieGoal > 0 && 128 >= heartrateConfig.calorieGoal}
+						zoneColorsEnabled={heartrateConfig.zoneColorsEnabled}
+						zoneLowMax={heartrateConfig.zoneLowMax}
+						zoneMidMax={heartrateConfig.zoneMidMax}
+						zoneLowColor={heartrateConfig.zoneLowColor}
+						zoneMidColor={heartrateConfig.zoneMidColor}
+						zoneHighColor={heartrateConfig.zoneHighColor}
 					/>
 				)}
 			</div>
@@ -1694,6 +1744,108 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 														Show calories burned
 													</Label>
 												</div>
+												{(config as HeartrateConfig).showCalories && (
+													<div className="space-y-2 pl-6">
+														<Label htmlFor="hrCalorieGoal">Calorie goal (kcal)</Label>
+														<Input
+															id="hrCalorieGoal"
+															type="number"
+															min={0}
+															placeholder="e.g. 500 (blank = no goal)"
+															value={(config as HeartrateConfig).calorieGoal ?? ""}
+															onChange={(e) => {
+																const raw = e.target.value;
+																updateHeartrateConfig({
+																	calorieGoal: raw === "" ? null : Math.max(1, Number(raw) || 0),
+																});
+															}}
+															className="text-xs"
+														/>
+														<p className="text-[11px] text-muted-foreground">
+															Shows a progress bar under the calorie count and flashes
+															gold once when the goal is reached. Leave blank to just
+															show the running total with no goal/bar.
+														</p>
+													</div>
+												)}
+												<div className="flex items-center space-x-2">
+													<Checkbox
+														id="hrZoneColors"
+														checked={(config as HeartrateConfig).zoneColorsEnabled}
+														onCheckedChange={(checked) =>
+															updateHeartrateConfig({
+																zoneColorsEnabled: Boolean(checked),
+															})
+														}
+													/>
+													<Label htmlFor="hrZoneColors" className="cursor-pointer">
+														Use heart rate zone colors
+													</Label>
+												</div>
+												{(config as HeartrateConfig).zoneColorsEnabled && (
+													<div className="space-y-3 pl-6">
+														<p className="text-[11px] text-muted-foreground">
+															Recolors the heart icon and BPM number live based on
+															which zone the current reading falls in. Overrides Heart
+															Color below while active -- Heart Color is still used
+															whenever this is off.
+														</p>
+														<div className="grid grid-cols-2 gap-3">
+															<div className="space-y-1.5">
+																<Label htmlFor="hrZoneLowMax" className="text-xs">
+																	Low / Mid boundary (BPM)
+																</Label>
+																<Input
+																	id="hrZoneLowMax"
+																	type="number"
+																	min={1}
+																	value={(config as HeartrateConfig).zoneLowMax}
+																	onChange={(e) =>
+																		updateHeartrateConfig({
+																			zoneLowMax: Math.max(1, Number(e.target.value) || 1),
+																		})
+																	}
+																	className="text-xs"
+																/>
+															</div>
+															<div className="space-y-1.5">
+																<Label htmlFor="hrZoneMidMax" className="text-xs">
+																	Mid / High boundary (BPM)
+																</Label>
+																<Input
+																	id="hrZoneMidMax"
+																	type="number"
+																	min={1}
+																	value={(config as HeartrateConfig).zoneMidMax}
+																	onChange={(e) =>
+																		updateHeartrateConfig({
+																			zoneMidMax: Math.max(1, Number(e.target.value) || 1),
+																		})
+																	}
+																	className="text-xs"
+																/>
+															</div>
+														</div>
+														<ColorField
+															id="hrZoneLowColor"
+															label={`Below ${(config as HeartrateConfig).zoneLowMax} BPM`}
+															color={(config as HeartrateConfig).zoneLowColor}
+															onChange={(color) => updateHeartrateConfig({ zoneLowColor: color })}
+														/>
+														<ColorField
+															id="hrZoneMidColor"
+															label={`${(config as HeartrateConfig).zoneLowMax}-${(config as HeartrateConfig).zoneMidMax} BPM`}
+															color={(config as HeartrateConfig).zoneMidColor}
+															onChange={(color) => updateHeartrateConfig({ zoneMidColor: color })}
+														/>
+														<ColorField
+															id="hrZoneHighColor"
+															label={`${(config as HeartrateConfig).zoneMidMax}+ BPM`}
+															color={(config as HeartrateConfig).zoneHighColor}
+															onChange={(color) => updateHeartrateConfig({ zoneHighColor: color })}
+														/>
+													</div>
+												)}
 											</>
 										) : (
 											<>

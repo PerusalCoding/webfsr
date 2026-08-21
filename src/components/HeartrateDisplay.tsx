@@ -15,6 +15,14 @@ type HeartrateCurrentDisplayProps = {
 	textColor?: string;
 	showCalories?: boolean;
 	calories?: number | null;
+	calorieGoal?: number | null;
+	goalReached?: boolean;
+	zoneColorsEnabled?: boolean;
+	zoneLowMax?: number;
+	zoneMidMax?: number;
+	zoneLowColor?: string;
+	zoneMidColor?: string;
+	zoneHighColor?: string;
 };
 
 export interface HeartrateSample {
@@ -40,6 +48,12 @@ type HeartrateHistoryGraphProps = {
 };
 
 const HEARTBEAT_STYLE_ID = "heartrate-obs-animation";
+const GOAL_PULSE_STYLE_ID = "heartrate-obs-goal-pulse-animation";
+const DEFAULT_ZONE_LOW_MAX = 120;
+const DEFAULT_ZONE_MID_MAX = 160;
+const DEFAULT_ZONE_LOW_COLOR = "rgba(96, 165, 250, 1)"; // blue
+const DEFAULT_ZONE_MID_COLOR = "rgba(250, 204, 21, 1)"; // yellow
+const DEFAULT_ZONE_HIGH_COLOR = "rgba(239, 68, 68, 1)"; // red
 const GRAPH_WIDTH = 1000;
 const GRAPH_HEIGHT = 320;
 const MIN_RENDER_POINTS = 56;
@@ -67,6 +81,9 @@ const CURRENT_DISPLAY_BPM_LABEL_FONT_SIZE = 24;
 const CURRENT_DISPLAY_STATUS_FONT_SIZE = 22;
 const CURRENT_DISPLAY_CALORIES_FONT_SIZE = 24;
 const CURRENT_DISPLAY_CALORIES_ICON_SIZE = 22;
+const CURRENT_DISPLAY_GOAL_BAR_WIDTH = 160;
+const CURRENT_DISPLAY_GOAL_BAR_HEIGHT = 6;
+const CURRENT_DISPLAY_GOAL_TEXT_FONT_SIZE = 13;
 const CURRENT_DISPLAY_STATUS_MAX_WIDTH = 680;
 const CURRENT_DISPLAY_BPM_PLACEHOLDER = "888";
 
@@ -184,7 +201,27 @@ export function HeartrateCurrentDisplay({
 	textColor = DEFAULT_TEXT_COLOR,
 	showCalories = false,
 	calories = null,
+	calorieGoal = null,
+	goalReached = false,
+	zoneColorsEnabled = false,
+	zoneLowMax = DEFAULT_ZONE_LOW_MAX,
+	zoneMidMax = DEFAULT_ZONE_MID_MAX,
+	zoneLowColor = DEFAULT_ZONE_LOW_COLOR,
+	zoneMidColor = DEFAULT_ZONE_MID_COLOR,
+	zoneHighColor = DEFAULT_ZONE_HIGH_COLOR,
 }: HeartrateCurrentDisplayProps) {
+	// Zone coloring only overrides the heart icon and the big BPM number --
+	// the "BPM" label and status text underneath stay on textColor, so the
+	// display doesn't lose overall legibility/theme consistency just
+	// because the wearer's heart rate crossed a threshold.
+	const activeHeartColor =
+		zoneColorsEnabled && heartrate != null
+			? heartrate < zoneLowMax
+				? zoneLowColor
+				: heartrate < zoneMidMax
+					? zoneMidColor
+					: zoneHighColor
+			: heartColor;
 	const animationDuration =
 		!heartrate || !animateHeartbeat
 			? undefined
@@ -210,6 +247,27 @@ export function HeartrateCurrentDisplay({
 		document.head.appendChild(style);
 	}, []);
 
+	// One-time celebration when a calorie goal is crossed -- a gold glow
+	// pulse around the whole card, distinct from the heartbeat animation
+	// above (which is continuous and heart-rate-driven, not an event).
+	// heartrate.tsx owns the actual crossing detection/timing; this
+	// component just renders whatever `goalReached` it's handed.
+	useEffect(() => {
+		if (document.getElementById(GOAL_PULSE_STYLE_ID)) return;
+
+		const style = document.createElement("style");
+		style.id = GOAL_PULSE_STYLE_ID;
+		style.textContent = `
+			@keyframes goalPulse {
+				0% { box-shadow: 0 0 0 0 rgba(250, 204, 21, 0.7); transform: scale(1); }
+				30% { box-shadow: 0 0 0 18px rgba(250, 204, 21, 0); transform: scale(1.04); }
+				60% { box-shadow: 0 0 0 0 rgba(250, 204, 21, 0); transform: scale(1); }
+				100% { box-shadow: 0 0 0 0 rgba(250, 204, 21, 0); transform: scale(1); }
+			}
+		`;
+		document.head.appendChild(style);
+	}, []);
+
 	return (
 		<div ref={containerRef} className="flex h-full w-full items-center justify-center overflow-hidden">
 			<div
@@ -222,6 +280,7 @@ export function HeartrateCurrentDisplay({
 					padding: CURRENT_DISPLAY_PADDING,
 					transform: `scale(${scale})`,
 					transformOrigin: "center center",
+					animation: goalReached ? "goalPulse 1.6s ease-out 2" : undefined,
 				}}
 			>
 				<div className="flex flex-1 flex-col items-center justify-center text-center" style={{ gap: CURRENT_DISPLAY_SECTION_GAP }}>
@@ -230,16 +289,18 @@ export function HeartrateCurrentDisplay({
 							<div
 								className="flex shrink-0 items-center justify-center rounded-full"
 								style={{
-									backgroundColor: heartBackgroundColor,
+									backgroundColor: zoneColorsEnabled ? `${activeHeartColor.replace(/[\d.]+\)$/, "0.12)")}` : heartBackgroundColor,
 									height: CURRENT_DISPLAY_HEART_SHELL_SIZE,
 									width: CURRENT_DISPLAY_HEART_SHELL_SIZE,
+									transition: zoneColorsEnabled ? "background-color 400ms ease" : undefined,
 								}}
 							>
 								<div
 									style={{
 										...animationDuration,
-										color: heartColor,
+										color: activeHeartColor,
 										opacity: isLive ? 1 : 0.45,
+										transition: zoneColorsEnabled ? "color 400ms ease" : undefined,
 									}}
 								>
 									<Heart
@@ -260,7 +321,11 @@ export function HeartrateCurrentDisplay({
 								</span>
 								<div
 									className="row-start-1 col-start-1 text-center font-semibold leading-none tracking-tight tabular-nums"
-									style={{ fontSize: CURRENT_DISPLAY_BPM_FONT_SIZE }}
+									style={{
+										fontSize: CURRENT_DISPLAY_BPM_FONT_SIZE,
+										color: zoneColorsEnabled ? activeHeartColor : textColor,
+										transition: zoneColorsEnabled ? "color 400ms ease" : undefined,
+									}}
 								>
 									{heartrate ?? "--"}
 								</div>
@@ -276,14 +341,35 @@ export function HeartrateCurrentDisplay({
 						</div>
 					</div>
 					{showCalories && calories != null && (
-						<div className="flex items-center justify-center gap-2" style={{ color: textColor, opacity: 0.8 }}>
-							<Flame
-								fill="currentColor"
-								style={{ height: CURRENT_DISPLAY_CALORIES_ICON_SIZE, width: CURRENT_DISPLAY_CALORIES_ICON_SIZE }}
-							/>
-							<span className="font-semibold tabular-nums" style={{ fontSize: CURRENT_DISPLAY_CALORIES_FONT_SIZE }}>
-								{calories} kcal
-							</span>
+						<div className="flex flex-col items-center gap-1.5">
+							<div className="flex items-center justify-center gap-2" style={{ color: textColor, opacity: 0.8 }}>
+								<Flame
+									fill="currentColor"
+									style={{ height: CURRENT_DISPLAY_CALORIES_ICON_SIZE, width: CURRENT_DISPLAY_CALORIES_ICON_SIZE }}
+								/>
+								<span className="font-semibold tabular-nums" style={{ fontSize: CURRENT_DISPLAY_CALORIES_FONT_SIZE }}>
+									{calories}{calorieGoal != null && calorieGoal > 0 ? ` / ${calorieGoal}` : ""} kcal
+								</span>
+							</div>
+							{calorieGoal != null && calorieGoal > 0 && (
+								<div
+									className="overflow-hidden rounded-full"
+									style={{
+										width: CURRENT_DISPLAY_GOAL_BAR_WIDTH,
+										height: CURRENT_DISPLAY_GOAL_BAR_HEIGHT,
+										backgroundColor: `${textColor.replace(/[\d.]+\)$/, "0.18)")}`,
+									}}
+								>
+									<div
+										className="h-full rounded-full"
+										style={{
+											width: `${Math.max(0, Math.min(100, (calories / calorieGoal) * 100))}%`,
+											backgroundColor: calories >= calorieGoal ? "rgba(250, 204, 21, 1)" : activeHeartColor,
+											transition: "width 500ms ease, background-color 400ms ease",
+										}}
+									/>
+								</div>
+							)}
 						</div>
 					)}
 					{statusText && (
