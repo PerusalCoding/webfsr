@@ -100,6 +100,7 @@ export default defineConfig({
 				obsGraph: path.resolve(__dirname, "obs/graph/index.html"),
 				obsSensors: path.resolve(__dirname, "obs/sensors/index.html"),
 				obsHeartrate: path.resolve(__dirname, "obs/heartrate/index.html"),
+				obsSongs: path.resolve(__dirname, "obs/songs/index.html"),
 			},
 		},
 	},

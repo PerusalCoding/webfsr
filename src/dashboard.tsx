@@ -1,5 +1,5 @@
 import { AlertTriangle, Download, GripVertical, Heart, Moon, RefreshCw, Share, Smartphone, Sun, Unplug, Upload } from "lucide-react";
-import { memo, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
 	AboutDialog,
 	GeneralSettingsSection,
@@ -23,12 +23,12 @@ import { useBiometrics } from "~/lib/useBiometrics";
 import { useHeartrateMonitor } from "~/lib/useHeartrateMonitor";
 import { useHypeRateHeartrateMonitor } from "~/lib/useHypeRateHeartrateMonitor";
 import { useHypeRateSessionId } from "~/lib/useHypeRateSessionId";
-import { type ObsBroadcastPayload, useOBS } from "~/lib/useOBS";
+import { type BroadcastSongEntry, type ObsBroadcastPayload, useOBS } from "~/lib/useOBS";
 import { type ProfileData, useProfileManager } from "~/lib/useProfileManager";
 import { usePWAInstall } from "~/lib/usePWAInstall";
 import { useLastCode, useRemoteControl } from "~/lib/useRemoteControl";
 import { useSerialPort } from "~/lib/useSerialPort";
-import { useSongHistory } from "~/lib/useSongHistory";
+import { computeSongStats, bannerUrl, useSongHistory } from "~/lib/useSongHistory";
 import { useTheme } from "~/lib/useTheme";
 import { useSensorCount } from "~/store/dataStore";
 import type { DesktopMessage, MobileMessage, ProfileSyncPayload } from "~/store/remoteStore";
@@ -2855,6 +2855,43 @@ const Dashboard = () => {
 			heartrateTimestamp: heartrateData?.timestamp,
 		});
 	}, [broadcastToOBS, connectedHR, heartrateData?.heartrate, heartrateData?.timestamp, obsConnected]);
+
+	// Feeds the OBS "Song Ticker" component -- broadcasts the most recent
+	// plays (banner pre-resolved to an absolute URL, since the OBS browser
+	// source page has no Electron bridge access of its own to resolve a
+	// raw bannerPath the way the in-app song history view can). Always
+	// sends the top 10 regardless of how many the ticker is configured to
+	// actually show -- the OBS-side component decides its own visible
+	// count from its own URL config, so the count can be changed live in
+	// OBS without needing new data pushed from here.
+	const recentSongsForBroadcast = useMemo<BroadcastSongEntry[]>(() => {
+		return songHistory.songs
+			.map((song) => computeSongStats(song, songHistory.hrSamples, biometrics))
+			.sort((a, b) => b.startTime - a.startTime)
+			.slice(0, 10)
+			.map((song) => ({
+				title: song.title,
+				artist: song.artist,
+				style: song.style,
+				difficultyName: song.difficultyName,
+				difficulty: song.difficulty,
+				grade: song.grade,
+				passed: song.passed,
+				score: song.score,
+				avgHr: song.avgHr,
+				maxHr: song.maxHr,
+				calories: song.calories,
+				durationSeconds: song.durationSeconds,
+				startTime: song.startTime,
+				rate: song.rate,
+				bannerUrl: bannerUrl(songHistory.mediaBaseUrl, song.bannerPath),
+			}));
+	}, [songHistory.songs, songHistory.hrSamples, songHistory.mediaBaseUrl, biometrics]);
+
+	useEffect(() => {
+		if (!obsConnected) return;
+		broadcastToOBS({ recentSongs: recentSongsForBroadcast });
+	}, [broadcastToOBS, recentSongsForBroadcast, obsConnected]);
 
 	const handleHeartrateToggle = useStableCallback(async () => {
 		if (!isBluetoothSupported) return;

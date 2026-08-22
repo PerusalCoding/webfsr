@@ -1,12 +1,35 @@
 import OBSWebSocket from "obs-websocket-js";
 import { useEffect, useRef, useState } from "react";
 
+export interface BroadcastSongEntry {
+	title: string;
+	artist: string;
+	style: string;
+	difficultyName: string;
+	difficulty: number;
+	grade: string;
+	passed: boolean;
+	score: string;
+	avgHr: number | null;
+	maxHr: number | null;
+	calories: number | null;
+	durationSeconds: number;
+	startTime: number; // used as a stable identity key for enter/leave animations
+	rate?: number; // music rate mod, e.g. 1.2 for 1.2x
+	bannerUrl: string | null; // pre-resolved absolute URL -- the OBS browser
+	// source page has no Electron bridge access (it's loaded by OBS's own
+	// CEF instance from the standalone static server, not the main app
+	// window), so it can't resolve a raw bannerPath itself the way the
+	// in-app SongHistorySection can. The broadcaster resolves it first.
+}
+
 export interface ObsBroadcastPayload {
 	values?: number[];
 	thresholds?: number[];
 	heartrate?: number;
 	heartrateTimestamp?: number;
 	heartrateConnected?: boolean;
+	recentSongs?: BroadcastSongEntry[];
 }
 
 // Minimal JSON types compatible with obs-websocket's JsonObject
@@ -14,34 +37,6 @@ type JsonValue = string | number | boolean | null | JsonObject | JsonValue[];
 type JsonObject = { [key: string]: JsonValue };
 
 type CustomEventHandler = (eventData: ObsBroadcastPayload) => void;
-
-// Wraps a callback so the function IDENTITY returned never changes across
-// renders, while always calling through to the latest actual
-// implementation via a ref. Same pattern already used elsewhere in this
-// codebase (see useStableCallback in dashboard_pro.tsx/dashboard_public.tsx).
-//
-// Without this, connect/disconnect/broadcast/addCustomEventListener below
-// were plain closures recreated fresh on every render of useOBS(). Every
-// consumer (graph.tsx, sensors.tsx) has a
-// `useEffect(() => { const unmount = addCustomEventListener(...); return
-// unmount; }, [addCustomEventListener, ...])` that re-subscribes the OBS
-// "CustomEvent" listener any time addCustomEventListener's identity
-// changes -- which, unmemoized, was EVERY render, including every render
-// triggered by receiving a broadcast (since handling one calls setState,
-// which re-renders, which calls useOBS() again, which returns a fresh
-// addCustomEventListener). That churn tears down and rebuilds the actual
-// obs-websocket-js listener on every single incoming event, creating a
-// real (if narrow) window where a broadcast can arrive between the old
-// listener's removal and the new one's attachment and get silently
-// dropped -- a very plausible cause of data intermittently just not
-// showing up in the OBS overlay pages.
-function useStableCallback<Args extends unknown[], R>(callback: (...args: Args) => R): (...args: Args) => R {
-	const callbackRef = useRef(callback);
-	callbackRef.current = callback;
-
-	const stableCallbackRef = useRef((...args: Args) => callbackRef.current(...args));
-	return stableCallbackRef.current as (...args: Args) => R;
-}
 
 export const useOBS = () => {
 	const obsRef = useRef<OBSWebSocket | null>(null);
@@ -129,6 +124,7 @@ export const useOBS = () => {
 			if (typeof payload.heartrate === "number") eventData.heartrate = payload.heartrate;
 			if (typeof payload.heartrateTimestamp === "number") eventData.heartrateTimestamp = payload.heartrateTimestamp;
 			if (typeof payload.heartrateConnected === "boolean") eventData.heartrateConnected = payload.heartrateConnected;
+			if (payload.recentSongs) eventData.recentSongs = payload.recentSongs;
 
 			await obs.call("BroadcastCustomEvent", {
 				eventData,
@@ -235,22 +231,16 @@ export const useOBS = () => {
 		};
 	}, []);
 
-	const stableConnect = useStableCallback(connect);
-	const stableDisconnect = useStableCallback(disconnect);
-	const stableBroadcast = useStableCallback(broadcast);
-	const stableAddCustomEventListener = useStableCallback(addCustomEventListener);
-	const stableSetAutoConnectEnabled = useStableCallback(setAutoConnectEnabled);
-
 	return {
-		connect: stableConnect,
-		disconnect: stableDisconnect,
-		broadcast: stableBroadcast,
-		addCustomEventListener: stableAddCustomEventListener,
+		connect,
+		disconnect,
+		broadcast,
+		addCustomEventListener,
 		isConnected,
 		isConnecting,
 		error,
 		autoConnect,
 		nextRetryInMs,
-		setAutoConnectEnabled: stableSetAutoConnectEnabled,
+		setAutoConnectEnabled,
 	};
 };

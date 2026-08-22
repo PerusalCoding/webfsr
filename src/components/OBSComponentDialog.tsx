@@ -10,6 +10,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~/components/ui/select";
 import { Slider } from "~/components/ui/slider";
 import { useProfileManager } from "~/lib/useProfileManager";
+import { difficultyBadge, formatDuration, gradeDisplay } from "~/lib/songFormatting";
 import { HeartrateCurrentDisplay, HeartrateHistoryGraph, type HeartrateHistoryAxisSide, type HeartrateSample } from "./HeartrateDisplay";
 import SensorBar, { maxSensorVal } from "./SensorBar";
 import TimeSeriesGraph from "./TimeSeriesGraph";
@@ -22,7 +23,7 @@ export type OBSComponentDialogProps = {
 	password?: string;
 };
 
-type ComponentType = "graph" | "sensors" | "heartrate";
+type ComponentType = "graph" | "sensors" | "heartrate" | "songs";
 
 interface GraphConfig {
 	timeWindow: number;
@@ -75,6 +76,8 @@ interface HeartrateConfig {
 	zoneLowColor: string;
 	zoneMidColor: string;
 	zoneHighColor: string;
+	bpmFontSize: number;
+	caloriesFontSize: number;
 	timeWindow: number;
 	containerBackgroundColor: string;
 	heartColor: string;
@@ -90,7 +93,17 @@ interface HeartrateConfig {
 	historyAxisTextGap: number;
 }
 
-type ComponentConfig = GraphConfig | SensorsConfig | HeartrateConfig;
+interface SongTickerConfig {
+	count: number; // how many songs stay visible at once, 1-10
+	showBanner: boolean;
+	showGrade: boolean;
+	showStats: boolean; // Avg HR / Max HR / Cal / Time row
+	fadeMs: number; // enter/leave crossfade duration
+	containerBackgroundColor: string;
+	textColor: string;
+}
+
+type ComponentConfig = GraphConfig | SensorsConfig | HeartrateConfig | SongTickerConfig;
 
 const hexToRgba = (hex: string): { r: number; g: number; b: number; a: number } => {
 	const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -263,6 +276,8 @@ const DEFAULT_CONFIGS = {
 		zoneLowColor: "rgba(96, 165, 250, 1)",
 		zoneMidColor: "rgba(250, 204, 21, 1)",
 		zoneHighColor: "rgba(239, 68, 68, 1)",
+		bpmFontSize: 220,
+		caloriesFontSize: 24,
 		timeWindow: 30,
 		containerBackgroundColor: "rgba(0, 0, 0, 0.35)",
 		heartColor: "rgba(239, 68, 68, 1)",
@@ -277,6 +292,15 @@ const DEFAULT_CONFIGS = {
 		historyAxisTextColor: "rgba(255, 255, 255, 0.72)",
 		historyAxisTextGap: 30,
 	} as HeartrateConfig,
+	songs: {
+		count: 5,
+		showBanner: true,
+		showGrade: true,
+		showStats: true,
+		fadeMs: 500,
+		containerBackgroundColor: "rgba(0, 0, 0, 0.55)",
+		textColor: "rgba(255, 255, 255, 1)",
+	} as SongTickerConfig,
 };
 
 const getHeartrateHistoryMs = (timeWindowSeconds: number) => {
@@ -293,6 +317,7 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 		sensorLabels: activeProfile?.sensorLabels || [],
 	}));
 	const [heartrateConfig, setHeartrateConfig] = useState<HeartrateConfig>(DEFAULT_CONFIGS.heartrate);
+	const [songsConfig, setSongsConfig] = useState<SongTickerConfig>(DEFAULT_CONFIGS.songs);
 	const [url, setUrl] = useState("");
 	const [copied, setCopied] = useState(false);
 	const [timeWindowInput, setTimeWindowInput] = useState<string>("");
@@ -354,7 +379,14 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 		}
 	}, [open, heartrateConfig.timeWindow]);
 
-	const config = selectedComponent === "graph" ? graphConfig : selectedComponent === "sensors" ? sensorsConfig : heartrateConfig;
+	const config =
+		selectedComponent === "graph"
+			? graphConfig
+			: selectedComponent === "sensors"
+				? sensorsConfig
+				: selectedComponent === "heartrate"
+					? heartrateConfig
+					: songsConfig;
 
 	const previewContainerRef = useRef<HTMLDivElement>(null);
 	const sensorsInnerRef = useRef<HTMLDivElement>(null);
@@ -452,6 +484,8 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 	const isSensorsConfig = (c: ComponentConfig): c is SensorsConfig => c != null && Array.isArray((c as SensorsConfig).sensorColors);
 	const isHeartrateConfig = (c: ComponentConfig): c is HeartrateConfig =>
 		c != null && ((c as HeartrateConfig).mode === "current" || (c as HeartrateConfig).mode === "graph");
+	const isSongsConfig = (c: ComponentConfig): c is SongTickerConfig =>
+		c != null && typeof (c as SongTickerConfig).count === "number" && typeof (c as SongTickerConfig).fadeMs === "number";
 
 	const generateUrl = () => {
 		// In Electron, always prefer the local OBS static server's base URL
@@ -603,6 +637,12 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 					params.set("zoneHighColor", heartrateConfig.zoneHighColor);
 				}
 			}
+			if (heartrateConfig.bpmFontSize !== DEFAULT_CONFIGS.heartrate.bpmFontSize) {
+				params.set("bpmSize", String(heartrateConfig.bpmFontSize));
+			}
+			if (heartrateConfig.caloriesFontSize !== DEFAULT_CONFIGS.heartrate.caloriesFontSize) {
+				params.set("caloriesSize", String(heartrateConfig.caloriesFontSize));
+			}
 			if (heartrateConfig.timeWindow !== DEFAULT_CONFIGS.heartrate.timeWindow) {
 				params.set("window", heartrateConfig.timeWindow.toString());
 			}
@@ -642,6 +682,23 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 			if (heartrateConfig.historyAxisTextGap !== DEFAULT_CONFIGS.heartrate.historyAxisTextGap) {
 				params.set("axisTextGap", heartrateConfig.historyAxisTextGap.toString());
 			}
+		} else if (selectedComponent === "songs" && isSongsConfig(config)) {
+			const songsConfig = config;
+			if (songsConfig.count !== DEFAULT_CONFIGS.songs.count) {
+				params.set("count", String(songsConfig.count));
+			}
+			if (!songsConfig.showBanner) params.set("showBanner", "false");
+			if (!songsConfig.showGrade) params.set("showGrade", "false");
+			if (!songsConfig.showStats) params.set("showStats", "false");
+			if (songsConfig.fadeMs !== DEFAULT_CONFIGS.songs.fadeMs) {
+				params.set("fadeMs", String(songsConfig.fadeMs));
+			}
+			if (songsConfig.containerBackgroundColor !== DEFAULT_CONFIGS.songs.containerBackgroundColor) {
+				params.set("containerBgColor", songsConfig.containerBackgroundColor);
+			}
+			if (songsConfig.textColor !== DEFAULT_CONFIGS.songs.textColor) {
+				params.set("textColor", songsConfig.textColor);
+			}
 		}
 
 		const finalUrl = `${baseUrl}?${params.toString()}`;
@@ -658,6 +715,10 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 
 	const updateHeartrateConfig = (updates: Partial<HeartrateConfig>) => {
 		setHeartrateConfig((prev) => ({ ...prev, ...updates }));
+	};
+
+	const updateSongsConfig = (updates: Partial<SongTickerConfig>) => {
+		setSongsConfig((prev) => ({ ...prev, ...updates }));
 	};
 
 	const getSelectedSensorIndices = () => {
@@ -791,6 +852,8 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 				heartrateConfig.zoneLowColor = params.get("zoneLowColor") || DEFAULT_CONFIGS.heartrate.zoneLowColor;
 				heartrateConfig.zoneMidColor = params.get("zoneMidColor") || DEFAULT_CONFIGS.heartrate.zoneMidColor;
 				heartrateConfig.zoneHighColor = params.get("zoneHighColor") || DEFAULT_CONFIGS.heartrate.zoneHighColor;
+				heartrateConfig.bpmFontSize = Math.max(40, Math.min(400, Number(params.get("bpmSize")) || DEFAULT_CONFIGS.heartrate.bpmFontSize));
+				heartrateConfig.caloriesFontSize = Math.max(10, Math.min(120, Number(params.get("caloriesSize")) || DEFAULT_CONFIGS.heartrate.caloriesFontSize));
 
 				const heartrateWindow = params.get("window");
 				if (heartrateWindow) heartrateConfig.timeWindow = Number(heartrateWindow);
@@ -834,6 +897,21 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 				if (historyAxisTextGap) heartrateConfig.historyAxisTextGap = Math.max(0, Number(historyAxisTextGap) || 0);
 
 				setHeartrateConfig(heartrateConfig);
+			} else if (selectedComponent === "songs") {
+				const songsConfig = { ...DEFAULT_CONFIGS.songs };
+				songsConfig.count = Math.max(1, Math.min(10, Number(params.get("count")) || DEFAULT_CONFIGS.songs.count));
+				songsConfig.showBanner = params.get("showBanner") !== "false";
+				songsConfig.showGrade = params.get("showGrade") !== "false";
+				songsConfig.showStats = params.get("showStats") !== "false";
+				songsConfig.fadeMs = Math.max(0, Math.min(3000, Number(params.get("fadeMs")) || DEFAULT_CONFIGS.songs.fadeMs));
+
+				const containerBackgroundColor = params.get("containerBgColor");
+				if (containerBackgroundColor) songsConfig.containerBackgroundColor = containerBackgroundColor;
+
+				const textColor = params.get("textColor");
+				if (textColor) songsConfig.textColor = textColor;
+
+				setSongsConfig(songsConfig);
 			}
 		} catch (err) {
 			console.error("Failed to parse URL:", err);
@@ -915,6 +993,67 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 			);
 		}
 
+		if (selectedComponent === "songs") {
+			const songsConfig = config as SongTickerConfig;
+			const mockSongs = [
+				{ title: "BOSSY (Jorts Speedy Mix)", artist: "BABYPOWDER", style: "single", difficultyName: "Challenge", difficulty: 12, grade: "Tier06", passed: true, score: "92.46", avgHr: 61, maxHr: 67, calories: 3, durationSeconds: 132 },
+				{ title: "Save New Jersey", artist: "Save New Jersey", style: "single", difficultyName: "Challenge", difficulty: 13, grade: "Tier04", passed: true, score: "97.10", avgHr: 67, maxHr: 75, calories: 5, durationSeconds: 139 },
+				{ title: "NO MORE GAMES", artist: "Various Artists (mixed by Rems)", style: "single", difficultyName: "Challenge", difficulty: 24, grade: "Tier17", passed: false, score: "0.39", avgHr: null, maxHr: null, calories: null, durationSeconds: 75 },
+			].slice(0, songsConfig.count);
+
+			return (
+				<div className="w-full h-full bg-black overflow-hidden p-2 flex flex-col gap-2 justify-end">
+					{mockSongs.map((song) => {
+						const { label: gradeLabel, className: gradeClassName } = gradeDisplay(song.grade, song.passed, song.score);
+						return (
+							<div
+								key={song.title}
+								className="flex items-center gap-3 rounded-lg overflow-hidden px-3 py-2.5"
+								style={{ backgroundColor: songsConfig.containerBackgroundColor, color: songsConfig.textColor }}
+							>
+								{songsConfig.showBanner && <div className="w-16 h-[47px] rounded shrink-0 bg-white/10" />}
+								<div className="min-w-0 flex-1">
+									<div className="font-semibold text-sm truncate">{song.title}</div>
+									<div className="text-xs opacity-70 truncate">{song.artist}</div>
+									<span className="inline-block mt-1 px-1.5 py-0.5 text-[10px] font-bold rounded bg-red-600 text-white">
+										{difficultyBadge(song.style, song.difficultyName, song.difficulty)}
+									</span>
+								</div>
+								{songsConfig.showGrade && (
+									<div className="flex flex-col items-center gap-0.5 shrink-0">
+										<span className={`inline-flex items-center justify-center min-w-[2.5rem] px-1.5 py-0.5 rounded font-bold text-xs tabular-nums ${gradeClassName}`}>
+											{gradeLabel}
+										</span>
+										<span className="text-[10px] opacity-70 tabular-nums">{song.score}%</span>
+									</div>
+								)}
+								{songsConfig.showStats && (
+									<div className="flex items-center gap-2.5 text-[10px] shrink-0">
+										<div className="text-center">
+											<div className="opacity-60 uppercase tracking-wide">HR</div>
+											<div className="tabular-nums">{song.avgHr ?? "—"}</div>
+										</div>
+										<div className="text-center">
+											<div className="opacity-60 uppercase tracking-wide">Max</div>
+											<div className="tabular-nums">{song.maxHr ?? "—"}</div>
+										</div>
+										<div className="text-center">
+											<div className="opacity-60 uppercase tracking-wide">Cal</div>
+											<div className="tabular-nums">{song.calories ?? "—"}</div>
+										</div>
+										<div className="text-center">
+											<div className="opacity-60 uppercase tracking-wide">Time</div>
+											<div className="tabular-nums">{formatDuration(song.durationSeconds)}</div>
+										</div>
+									</div>
+								)}
+							</div>
+						);
+					})}
+				</div>
+			);
+		}
+
 		const heartrateConfig = config as HeartrateConfig;
 
 		return (
@@ -957,6 +1096,8 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 						zoneLowColor={heartrateConfig.zoneLowColor}
 						zoneMidColor={heartrateConfig.zoneMidColor}
 						zoneHighColor={heartrateConfig.zoneHighColor}
+						bpmFontSize={heartrateConfig.bpmFontSize}
+						caloriesFontSize={heartrateConfig.caloriesFontSize}
 					/>
 				)}
 			</div>
@@ -985,6 +1126,7 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 										<SelectItem value="graph">Graph</SelectItem>
 										<SelectItem value="sensors">Sensors</SelectItem>
 										<SelectItem value="heartrate">Heartrate Monitor</SelectItem>
+										<SelectItem value="songs">Song Ticker</SelectItem>
 									</SelectContent>
 								</Select>
 							</div>
@@ -1674,6 +1816,44 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 									<div className="space-y-3">
 										{(config as HeartrateConfig).mode === "current" ? (
 											<>
+												<div className="space-y-3 rounded-md border p-3">
+													<div className="flex items-center justify-between gap-3">
+														<Label htmlFor="hrBpmSize" className="text-sm">
+															Heart Rate number size
+														</Label>
+														<span className="text-xs text-muted-foreground">{(config as HeartrateConfig).bpmFontSize}px</span>
+													</div>
+													<Slider
+														id="hrBpmSize"
+														value={[(config as HeartrateConfig).bpmFontSize]}
+														min={40}
+														max={400}
+														step={4}
+														onValueChange={(value) =>
+															updateHeartrateConfig({ bpmFontSize: value[0] ?? (config as HeartrateConfig).bpmFontSize })
+														}
+													/>
+												</div>
+												{(config as HeartrateConfig).showCalories && (
+													<div className="space-y-3 rounded-md border p-3">
+														<div className="flex items-center justify-between gap-3">
+															<Label htmlFor="hrCaloriesSize" className="text-sm">
+																Calories number size
+															</Label>
+															<span className="text-xs text-muted-foreground">{(config as HeartrateConfig).caloriesFontSize}px</span>
+														</div>
+														<Slider
+															id="hrCaloriesSize"
+															value={[(config as HeartrateConfig).caloriesFontSize]}
+															min={10}
+															max={120}
+															step={2}
+															onValueChange={(value) =>
+																updateHeartrateConfig({ caloriesFontSize: value[0] ?? (config as HeartrateConfig).caloriesFontSize })
+															}
+														/>
+													</div>
+												)}
 												<div className="flex items-center space-x-2">
 													<Checkbox
 														id="hrAnimateHeartbeat"
@@ -1993,6 +2173,102 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 												/>
 											</>
 										)}
+									</div>
+								</div>
+							</div>
+						)}
+
+						{selectedComponent === "songs" && (
+							<div className="flex flex-wrap gap-6 justify-center items-start">
+								<div className="space-y-4 min-w-[280px] max-w-[360px]">
+									<Label className="text-lg font-semibold">Song Ticker</Label>
+									<div className="space-y-3">
+										<div className="space-y-3 rounded-md border p-3">
+											<div className="flex items-center justify-between gap-3">
+												<Label htmlFor="songsCount" className="text-sm">
+													Songs shown at once
+												</Label>
+												<span className="text-xs text-muted-foreground">{(config as SongTickerConfig).count}</span>
+											</div>
+											<Slider
+												id="songsCount"
+												value={[(config as SongTickerConfig).count]}
+												min={1}
+												max={10}
+												step={1}
+												onValueChange={(value) =>
+													updateSongsConfig({ count: value[0] ?? (config as SongTickerConfig).count })
+												}
+											/>
+											<p className="text-[11px] text-muted-foreground">
+												When a new song pushes the list past this count, the oldest
+												entry fades out as the new one fades in -- doesn't just cut
+												instantly.
+											</p>
+										</div>
+
+										<div className="space-y-3 rounded-md border p-3">
+											<div className="flex items-center justify-between gap-3">
+												<Label htmlFor="songsFadeMs" className="text-sm">
+													Fade duration
+												</Label>
+												<span className="text-xs text-muted-foreground">{(config as SongTickerConfig).fadeMs}ms</span>
+											</div>
+											<Slider
+												id="songsFadeMs"
+												value={[(config as SongTickerConfig).fadeMs]}
+												min={0}
+												max={2000}
+												step={50}
+												onValueChange={(value) =>
+													updateSongsConfig({ fadeMs: value[0] ?? (config as SongTickerConfig).fadeMs })
+												}
+											/>
+										</div>
+
+										<div className="flex items-center space-x-2">
+											<Checkbox
+												id="songsShowBanner"
+												checked={(config as SongTickerConfig).showBanner}
+												onCheckedChange={(checked) => updateSongsConfig({ showBanner: Boolean(checked) })}
+											/>
+											<Label htmlFor="songsShowBanner" className="cursor-pointer">
+												Show banner
+											</Label>
+										</div>
+										<div className="flex items-center space-x-2">
+											<Checkbox
+												id="songsShowGrade"
+												checked={(config as SongTickerConfig).showGrade}
+												onCheckedChange={(checked) => updateSongsConfig({ showGrade: Boolean(checked) })}
+											/>
+											<Label htmlFor="songsShowGrade" className="cursor-pointer">
+												Show grade + score
+											</Label>
+										</div>
+										<div className="flex items-center space-x-2">
+											<Checkbox
+												id="songsShowStats"
+												checked={(config as SongTickerConfig).showStats}
+												onCheckedChange={(checked) => updateSongsConfig({ showStats: Boolean(checked) })}
+											/>
+											<Label htmlFor="songsShowStats" className="cursor-pointer">
+												Show Avg HR / Max HR / Cal / Time
+											</Label>
+										</div>
+
+										<ColorField
+											id="songsBgColor"
+											label="Row Background"
+											color={(config as SongTickerConfig).containerBackgroundColor}
+											onChange={(color) => updateSongsConfig({ containerBackgroundColor: color })}
+										/>
+										<ColorField
+											id="songsTextColor"
+											label="Text Color"
+											color={(config as SongTickerConfig).textColor}
+											onChange={(color) => updateSongsConfig({ textColor: color })}
+										/>
 									</div>
 								</div>
 							</div>
