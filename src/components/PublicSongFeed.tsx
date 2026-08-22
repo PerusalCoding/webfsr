@@ -1,17 +1,24 @@
 import { useEffect, useState } from "react";
-import { Star } from "lucide-react";
 import { supabase, type PublicSongPlay } from "~/lib/supabaseClient";
-import { difficultyBadge, starsForScore, formatDuration, formatDate } from "~/lib/songFormatting";
+import { difficultyBadge, gradeDisplay, formatDuration, formatDate } from "~/lib/songFormatting";
 
 const FEED_PAGE_SIZE = 50;
 
-function StarRating({ count }: { count: number }) {
+function GradeBadge({ passed, score }: { passed: boolean; score: string }) {
+	// The public feed's Supabase row doesn't carry the raw StepMania
+	// `grade` field (only the local song history does, straight from
+	// SongHRLog.lua) -- gradeDisplay() falls back to estimating the tier
+	// from the score percentage when no grade string is passed, using the
+	// same real Tier01-17 thresholds as the exact version. Slightly less
+	// precise right at a tier boundary than the real enum value would be,
+	// but far closer than the old fixed 3-star scale this replaced. If a
+	// literal grade is wanted here too, that needs `grade` added to
+	// usePublishSongs.ts's upload payload and the song_plays table.
+	const { label, className } = gradeDisplay(undefined, passed, score);
 	return (
-		<div className="flex gap-0.5">
-			{[0, 1, 2].map((i) => (
-				<Star key={i} className={`size-3.5 ${i < count ? "fill-yellow-400 text-yellow-400" : "text-gray-600"}`} />
-			))}
-		</div>
+		<span className={`inline-flex items-center justify-center min-w-[3rem] px-2 py-1 rounded font-bold text-sm tabular-nums ${className}`}>
+			{label}
+		</span>
 	);
 }
 
@@ -47,7 +54,7 @@ function FeedRow({ play }: { play: PublicSongPlay }) {
 			</div>
 
 			<div className="flex flex-col items-center gap-1 w-20 shrink-0">
-				<StarRating count={starsForScore(play.score)} />
+				<GradeBadge passed={play.passed} score={play.score} />
 				{play.score && <div className="text-blue-400 font-semibold text-sm">{play.score}%</div>}
 			</div>
 
