@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 
-const LS_HYPERATE_SESSION_KEY = "sityIdPMu5jsb7AosH4Qo0SzjgPlxUXvrcBihaCa";
+const LS_HYPERATE_SESSION_KEY = "";
 
 // Unlike Pulsoid, HypeRate needs no login/OAuth at all -- the user just
 // opens the free HypeRate app, copies their Session ID from Settings, and
