@@ -14,18 +14,6 @@ export interface SongLogEntry {
 	startTime: number; // epoch seconds
 	endTime: number; // epoch seconds
 	passed: boolean;
-	// Judgment counts and rate mod -- optional since log entries written
-	// before this field existed won't have them. All undefined together
-	// on an entry just means "logged with an older SongHRLog.lua" -- the
-	// UI falls back to hiding the expand affordance for those rows rather
-	// than showing zeroes, which would misleadingly imply a perfect FC.
-	fantastic?: number;
-	excellent?: number;
-	great?: number;
-	decent?: number;
-	wayOff?: number;
-	miss?: number;
-	rate?: number; // music rate mod, e.g. 1.2 for a 1.2x rate; omitted/1.0 = unmodified
 }
 
 export interface HeartrateSample {
@@ -74,6 +62,7 @@ interface SongHistoryBridge {
 	getAllSongs: () => Promise<SongLogEntry[]>;
 	onSongLogUpdate: (callback: (entries: SongLogEntry[]) => void) => () => void;
 	sendHeartrateSample: (sample: HeartrateSample) => void;
+	savePublishConfig: (config: { playerName: string; publishEnabled: boolean }) => void;
 	getAllHeartrateSamples: () => Promise<HeartrateSample[]>;
 	getMediaBaseUrl: () => Promise<string>;
 }

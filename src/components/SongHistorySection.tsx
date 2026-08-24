@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { SongLogEntry, HeartrateSample, SongWithStats } from "~/lib/useSongHistory";
 import { bannerUrl, computeSongStats } from "~/lib/useSongHistory";
@@ -195,6 +195,13 @@ export function SongHistorySection({
 	const { playerName, setPlayerName } = usePlayerName();
 	const { publishEnabled, setPublishEnabled } = usePublishOptIn();
 	usePublishSongs(songsWithStats, publishEnabled ? playerName : "", mediaBaseUrl);
+
+	// Keep SongHRLog.lua's copy of these in sync, so the live "Now Playing"
+	// indicator respects the same name/opt-in choice even when this app
+	// isn't open -- see Save/AwakenedAnimus/publish_config.json.
+	useEffect(() => {
+		window.songHistoryBridge?.savePublishConfig({ playerName, publishEnabled });
+	}, [playerName, publishEnabled]);
 
 	// "My Plays" (this device's local history) vs "Global Feed" (everyone's
 	// published plays, same data the public webfsr site shows) -- defaults

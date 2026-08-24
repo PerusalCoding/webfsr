@@ -1,8 +1,38 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { supabase, type PublicSongPlay } from "~/lib/supabaseClient";
-import { difficultyBadge, gradeDisplay, formatDuration, formatDate } from "~/lib/songFormatting";
+import { difficultyBadge, gradeDisplay, formatDuration, formatDate, dayKey, dayLabel } from "~/lib/songFormatting";
+import { NowPlayingStrip } from "~/components/NowPlayingStrip";
 
 const FEED_PAGE_SIZE = 50;
+
+function playedAtEpochSeconds(play: PublicSongPlay): number {
+	return new Date(play.played_at).getTime() / 1000;
+}
+
+interface DayGroup {
+	key: string;
+	label: string;
+	plays: PublicSongPlay[];
+}
+
+// Same day-grouping behavior as the local (Electron) song list -- with a
+// shared, growing feed across everyone using the app, a flat list gets
+// unmanageable fast, so it's grouped by day with only the most recent day
+// expanded by default.
+function groupByDay(plays: PublicSongPlay[]): DayGroup[] {
+	const groups: DayGroup[] = [];
+	for (const play of plays) {
+		const key = dayKey(playedAtEpochSeconds(play));
+		const lastGroup = groups[groups.length - 1];
+		if (lastGroup && lastGroup.key === key) {
+			lastGroup.plays.push(play);
+		} else {
+			groups.push({ key, label: dayLabel(playedAtEpochSeconds(play)), plays: [play] });
+		}
+	}
+	return groups;
+}
 
 function GradeBadge({ passed, score }: { passed: boolean; score: string }) {
 	// The public feed's Supabase row doesn't carry the raw StepMania
@@ -132,28 +162,77 @@ export function PublicSongFeed() {
 		};
 	}, []);
 
+	const dayGroups = useMemo(() => groupByDay(plays), [plays]);
+
+	const [collapsedDays, setCollapsedDays] = useState<Set<string>>(
+		() => new Set(dayGroups.slice(1).map((g) => g.key)),
+	);
+	const toggleDay = (key: string) => {
+		setCollapsedDays((prev) => {
+			const next = new Set(prev);
+			if (next.has(key)) next.delete(key);
+			else next.add(key);
+			return next;
+		});
+	};
+
 	if (loading) {
-		return <div className="p-4 text-sm text-gray-600 dark:text-gray-400">Loading feed…</div>;
+		return (
+			<div>
+				<NowPlayingStrip />
+				<div className="p-4 text-sm text-gray-600 dark:text-gray-400">Loading feed…</div>
+			</div>
+		);
 	}
 
 	if (error) {
-		return <div className="p-4 text-sm text-destructive">Couldn't load the feed: {error}</div>;
+		return (
+			<div>
+				<NowPlayingStrip />
+				<div className="p-4 text-sm text-destructive">Couldn't load the feed: {error}</div>
+			</div>
+		);
 	}
 
 	if (plays.length === 0) {
 		return (
-			<div className="p-4 text-sm text-gray-600 dark:text-gray-400">
-				No plays published yet. Songs played in the Awakened Animus desktop app show up here automatically.
+			<div>
+				<NowPlayingStrip />
+				<div className="p-4 text-sm text-gray-600 dark:text-gray-400">
+					No plays published yet. Songs played in the Awakened Animus desktop app show up here automatically.
+				</div>
 			</div>
 		);
 	}
 
 	return (
-		<div className="p-4">
-			<div className="border rounded bg-white dark:bg-neutral-900 px-3">
-				{plays.map((play) => (
-					<FeedRow key={play.id} play={play} />
-				))}
+		<div>
+			<NowPlayingStrip />
+			<div className="p-4 space-y-3">
+				{dayGroups.map((group) => {
+					const isCollapsed = collapsedDays.has(group.key);
+					return (
+						<div key={group.key} className="border rounded bg-white dark:bg-neutral-900">
+							<button
+								onClick={() => toggleDay(group.key)}
+								className="w-full flex items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-gray-50 dark:hover:bg-neutral-800"
+							>
+								{isCollapsed ? <ChevronRight className="size-4" /> : <ChevronDown className="size-4" />}
+								<span>{group.label}</span>
+								<span className="text-xs text-gray-500 font-normal">
+									({group.plays.length} {group.plays.length === 1 ? "play" : "plays"})
+								</span>
+							</button>
+							{!isCollapsed && (
+								<div className="px-3 border-t">
+									{group.plays.map((play) => (
+										<FeedRow key={play.id} play={play} />
+									))}
+								</div>
+							)}
+						</div>
+					);
+				})}
 			</div>
 		</div>
 	);

@@ -96,6 +96,7 @@ contextBridge.exposeInMainWorld('songHistoryBridge', {
     return () => ipcRenderer.removeListener('song-log:updated', listener)
   },
   sendHeartrateSample: (sample) => ipcRenderer.send('heartrate:sample', sample),
+  savePublishConfig: (config) => ipcRenderer.send('publish-config:save', config),
   getAllHeartrateSamples: () => ipcRenderer.invoke('heartrate:get-samples'),
   getMediaBaseUrl: () => ipcRenderer.invoke('song-log:get-media-base-url'),
 })

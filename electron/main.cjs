@@ -413,6 +413,35 @@ function getSongLogPath() {
   return path.join(cfg.itgManiaRoot, 'Save', 'AwakenedAnimus', 'SongHRLog.jsonl')
 }
 
+// Shared with SongHRLog.lua's readPublishConfig() -- lets the Lua side
+// know the player's display name and publish opt-in without the desktop
+// app needing to be open, so it can publish the live "Now Playing"
+// indicator directly. Written here whenever either value changes in the
+// renderer (see the 'publish-config:save' IPC handler below).
+function getPublishConfigPath() {
+  const cfg = loadConfig()
+  if (!cfg.itgManiaRoot) return null
+  return path.join(cfg.itgManiaRoot, 'Save', 'AwakenedAnimus', 'publish_config.json')
+}
+
+function savePublishConfig(config) {
+  const configPath = getPublishConfigPath()
+  if (!configPath) return
+
+  try {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        playerName: typeof config?.playerName === 'string' ? config.playerName : '',
+        publishEnabled: !!config?.publishEnabled,
+      }),
+    )
+  } catch (err) {
+    console.error('[publish-config] failed to save:', err)
+  }
+}
+
 // Separate from itgManiaRoot above: on a PORTABLE ITGMania install, Save/
 // and Songs/ live together under one folder, so one root would suffice.
 // But on an INSTALLED (non-portable) copy, Save/ lives under
@@ -578,14 +607,6 @@ function readHrLog() {
 // resolves outside that root (a banner path is untrusted input coming from
 // a log file, so this containment check matters).
 const MEDIA_SERVER_PORT = 47832
-const MEDIA_MIME_TYPES = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.bmp': 'image/bmp',
-}
 let mediaServer = null
 
 function startMediaServer() {
@@ -624,7 +645,7 @@ function startMediaServer() {
           return
         }
         const ext = path.extname(resolvedTarget).toLowerCase()
-        const contentType = MEDIA_MIME_TYPES[ext] || 'application/octet-stream'
+        const contentType = OBS_MIME_TYPES[ext] || 'application/octet-stream'
         res.writeHead(200, { 'Content-Type': contentType })
         res.end(data)
       })
@@ -845,6 +866,10 @@ ipcMain.on('heartrate:sample', (event, sample) => {
 })
 
 ipcMain.handle('heartrate:get-samples', () => readHrLog())
+
+ipcMain.on('publish-config:save', (event, config) => {
+  savePublishConfig(config)
+})
 
 app.whenReady().then(() => {
   createWindow()
