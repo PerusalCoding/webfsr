@@ -54,6 +54,29 @@ export function usePublishSongs(songs: SongWithStats[], playerName: string, medi
 			inFlightRef.current.add(key);
 
 			(async () => {
+				// If SongHRLog.lua already published this play directly to
+				// Supabase (works without the desktop app open at all --
+				// see the "supabaseId" field it writes back into the local
+				// log once its own publish succeeds), merge HR/calories
+				// into that same row instead of inserting a second one.
+				if (song.supabaseId) {
+					const { error: updateError } = await supabase
+						.from("song_plays")
+						.update({
+							avg_hr: song.avgHr,
+							max_hr: song.maxHr,
+							calories: song.calories,
+						})
+						.eq("id", song.supabaseId);
+
+					if (!updateError) {
+						publishedRef.current.add(key);
+						savePublished(publishedRef.current);
+					}
+					inFlightRef.current.delete(key);
+					return;
+				}
+
 				let bannerUrlPublic: string | null = null;
 				const localBanner = bannerUrl(mediaBaseUrl, song.bannerPath);
 

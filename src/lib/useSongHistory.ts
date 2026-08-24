@@ -14,6 +14,11 @@ export interface SongLogEntry {
 	startTime: number; // epoch seconds
 	endTime: number; // epoch seconds
 	passed: boolean;
+	// Present only if SongHRLog.lua successfully published this play
+	// directly to Supabase (ArrowCloud-style, works without the desktop
+	// app open) -- when set, usePublishSongs merges HR/calories into that
+	// same row via UPDATE instead of inserting a duplicate.
+	supabaseId?: string;
 }
 
 export interface HeartrateSample {
