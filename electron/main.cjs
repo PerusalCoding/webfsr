@@ -435,6 +435,7 @@ function savePublishConfig(config) {
       JSON.stringify({
         playerName: typeof config?.playerName === 'string' ? config.playerName : '',
         publishEnabled: !!config?.publishEnabled,
+        liveFeedEnabled: !!config?.liveFeedEnabled,
       }),
     )
   } catch (err) {

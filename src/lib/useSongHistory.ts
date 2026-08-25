@@ -67,7 +67,7 @@ interface SongHistoryBridge {
 	getAllSongs: () => Promise<SongLogEntry[]>;
 	onSongLogUpdate: (callback: (entries: SongLogEntry[]) => void) => () => void;
 	sendHeartrateSample: (sample: HeartrateSample) => void;
-	savePublishConfig: (config: { playerName: string; publishEnabled: boolean }) => void;
+	savePublishConfig: (config: { playerName: string; publishEnabled: boolean; liveFeedEnabled: boolean }) => void;
 	getAllHeartrateSamples: () => Promise<HeartrateSample[]>;
 	getMediaBaseUrl: () => Promise<string>;
 }

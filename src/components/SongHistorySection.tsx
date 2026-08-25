@@ -5,6 +5,7 @@ import { bannerUrl, computeSongStats } from "~/lib/useSongHistory";
 import type { Biometrics } from "~/lib/calorieEstimate";
 import { usePlayerName } from "~/lib/usePlayerName";
 import { usePublishOptIn } from "~/lib/usePublishOptIn";
+import { useLiveFeedOptIn } from "~/lib/useLiveFeedOptIn";
 import { usePublishSongs } from "~/lib/usePublishSongs";
 import { PublicSongFeed } from "~/components/PublicSongFeed";
 import {
@@ -194,14 +195,16 @@ export function SongHistorySection({
 
 	const { playerName, setPlayerName } = usePlayerName();
 	const { publishEnabled, setPublishEnabled } = usePublishOptIn();
+	const { liveFeedEnabled, setLiveFeedEnabled } = useLiveFeedOptIn();
 	usePublishSongs(songsWithStats, publishEnabled ? playerName : "", mediaBaseUrl);
 
 	// Keep SongHRLog.lua's copy of these in sync, so the live "Now Playing"
-	// indicator respects the same name/opt-in choice even when this app
-	// isn't open -- see Save/AwakenedAnimus/publish_config.json.
+	// indicator and the historical publish each respect their own
+	// independent opt-in choice even when this app isn't open -- see
+	// Save/AwakenedAnimus/publish_config.json.
 	useEffect(() => {
-		window.songHistoryBridge?.savePublishConfig({ playerName, publishEnabled });
-	}, [playerName, publishEnabled]);
+		window.songHistoryBridge?.savePublishConfig({ playerName, publishEnabled, liveFeedEnabled });
+	}, [playerName, publishEnabled, liveFeedEnabled]);
 
 	// "My Plays" (this device's local history) vs "Global Feed" (everyone's
 	// published plays, same data the public webfsr site shows) -- defaults
@@ -297,6 +300,23 @@ export function SongHistorySection({
 								? "Publishing to feed"
 								: "Set a display name above to start publishing"
 							: "Off — your plays stay local to this device"}
+					</span>
+				</label>
+
+				<label className="flex items-center gap-2 text-sm">
+					<input
+						type="checkbox"
+						checked={liveFeedEnabled}
+						onChange={(e) => setLiveFeedEnabled(e.target.checked)}
+						className="size-4"
+					/>
+					<span>Show my live "Now Playing" status</span>
+					<span className="text-xs text-gray-500">
+						{liveFeedEnabled
+							? playerName.trim()
+								? "Broadcasting live while you play"
+								: "Set a display name above to start broadcasting"
+							: "Off — no one sees you\'re currently playing"}
 					</span>
 				</label>
 
