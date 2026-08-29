@@ -90,6 +90,9 @@ contextBridge.exposeInMainWorld('songHistoryBridge', {
   selectInstallFolder: () => ipcRenderer.invoke('song-log:select-install-folder'),
   getInstallFolder: () => ipcRenderer.invoke('song-log:get-install-folder'),
   getAllSongs: () => ipcRenderer.invoke('song-log:get-all'),
+  // Deletes local history entries by startTime (epoch seconds). Returns
+  // the updated full entry list.
+  deleteEntries: (startTimes) => ipcRenderer.invoke('song-log:delete-entries', startTimes),
   onSongLogUpdate: (callback) => {
     const listener = (_event, entries) => callback(entries)
     ipcRenderer.on('song-log:updated', listener)

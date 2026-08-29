@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import type { SongLogEntry, HeartrateSample, SongWithStats } from "~/lib/useSongHistory";
 import { bannerUrl, computeSongStats } from "~/lib/useSongHistory";
 import type { Biometrics } from "~/lib/calorieEstimate";
@@ -30,6 +30,10 @@ interface SongHistorySectionProps {
 	selectInstallFolder: () => void;
 	biometrics: Biometrics;
 	setBiometrics: (b: Biometrics) => void;
+	// Deletes local history entries by startTime (epoch seconds). Comes
+	// from useSongHistory()'s deleteEntries -- wire it through wherever
+	// this component is rendered.
+	deleteEntries: (startTimes: number[]) => void;
 }
 
 interface DayGroup {
@@ -81,7 +85,15 @@ function hasJudgmentData(song: SongWithStats): boolean {
 	);
 }
 
-function SongRow({ song, mediaBaseUrl }: { song: SongWithStats; mediaBaseUrl: string | null }) {
+function SongRow({
+	song,
+	mediaBaseUrl,
+	onDelete,
+}: {
+	song: SongWithStats;
+	mediaBaseUrl: string | null;
+	onDelete: (song: SongWithStats) => void;
+}) {
 	const banner = bannerUrl(mediaBaseUrl, song.bannerPath);
 	const { date, time } = formatDate(song.startTime);
 	const rateLabel = formatRate(song.rate);
@@ -159,6 +171,17 @@ function SongRow({ song, mediaBaseUrl }: { song: SongWithStats; mediaBaseUrl: st
 						)
 					)}
 				</div>
+
+				<button
+					onClick={(e) => {
+						e.stopPropagation();
+						onDelete(song);
+					}}
+					title="Remove this play"
+					className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-500/10 shrink-0"
+				>
+					<Trash2 className="size-4" />
+				</button>
 			</div>
 
 			{expandable && expanded && (
@@ -186,6 +209,7 @@ export function SongHistorySection({
 	selectInstallFolder,
 	biometrics,
 	setBiometrics,
+	deleteEntries,
 }: SongHistorySectionProps) {
 	const songsWithStats = useMemo(() => {
 		return songs
@@ -228,6 +252,24 @@ export function SongHistorySection({
 			else next.add(key);
 			return next;
 		});
+	};
+
+	// Each confirms via a native dialog before deleting, since this
+	// permanently rewrites SongHRLog.jsonl on disk -- there's no undo.
+	const handleDeleteSong = (song: SongWithStats) => {
+		if (!window.confirm(`Remove "${song.title}" from your history? This can't be undone.`)) return;
+		deleteEntries([song.startTime]);
+	};
+
+	const handleClearDay = (group: DayGroup) => {
+		if (!window.confirm(`Remove all ${group.songs.length} play(s) from ${group.label}? This can't be undone.`)) return;
+		deleteEntries(group.songs.map((s) => s.startTime));
+	};
+
+	const handleClearAll = () => {
+		if (songsWithStats.length === 0) return;
+		if (!window.confirm(`Delete all ${songsWithStats.length} logged plays? This can't be undone.`)) return;
+		deleteEntries(songsWithStats.map((s) => s.startTime));
 	};
 
 	// Browser (non-Electron) visitors -- including anyone visiting the
@@ -351,6 +393,21 @@ export function SongHistorySection({
 						</select>
 					</label>
 				</div>
+
+				<div className="flex items-center justify-between gap-2 pt-1 border-t">
+					<div className="text-sm">
+						<div className="font-medium text-red-500">Clear local play history</div>
+						<div className="text-xs text-gray-600 dark:text-gray-400">
+							Permanently deletes every logged play from this device. Can't be undone.
+						</div>
+					</div>
+					<button
+						onClick={handleClearAll}
+						className="px-3 py-1.5 text-sm rounded border border-red-500/50 text-red-500 hover:bg-red-500/10 shrink-0"
+					>
+						Clear all
+					</button>
+				</div>
 			</div>
 
 			<div className="flex gap-1 border rounded p-1 w-fit bg-white dark:bg-neutral-900">
@@ -384,20 +441,29 @@ export function SongHistorySection({
 						const isCollapsed = collapsedDays.has(group.key);
 						return (
 							<div key={group.key} className="border rounded bg-white dark:bg-neutral-900">
-								<button
-									onClick={() => toggleDay(group.key)}
-									className="w-full flex items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-gray-50 dark:hover:bg-neutral-800"
-								>
-									{isCollapsed ? <ChevronRight className="size-4" /> : <ChevronDown className="size-4" />}
-									<span>{group.label}</span>
-									<span className="text-xs text-gray-500 font-normal">
-										({group.songs.length} {group.songs.length === 1 ? "song" : "songs"})
-									</span>
-								</button>
+								<div className="w-full flex items-center gap-2 px-3 py-2">
+									<button
+										onClick={() => toggleDay(group.key)}
+										className="flex-1 flex items-center gap-2 text-sm font-medium hover:bg-gray-50 dark:hover:bg-neutral-800 -mx-1 px-1 py-1 rounded text-left"
+									>
+										{isCollapsed ? <ChevronRight className="size-4" /> : <ChevronDown className="size-4" />}
+										<span>{group.label}</span>
+										<span className="text-xs text-gray-500 font-normal">
+											({group.songs.length} {group.songs.length === 1 ? "song" : "songs"})
+										</span>
+									</button>
+									<button
+										onClick={() => handleClearDay(group)}
+										title={`Clear ${group.label}`}
+										className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-500/10 shrink-0"
+									>
+										<Trash2 className="size-4" />
+									</button>
+								</div>
 								{!isCollapsed && (
 									<div className="px-3 border-t">
 										{group.songs.map((song, i) => (
-											<SongRow key={`${song.startTime}-${i}`} song={song} mediaBaseUrl={mediaBaseUrl} />
+											<SongRow key={`${song.startTime}-${i}`} song={song} mediaBaseUrl={mediaBaseUrl} onDelete={handleDeleteSong} />
 										))}
 									</div>
 								)}

@@ -10,8 +10,18 @@ import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~/components/ui/select";
 import { Slider } from "~/components/ui/slider";
 import { useProfileManager } from "~/lib/useProfileManager";
-import { difficultyBadge, formatDuration, gradeDisplay } from "~/lib/songFormatting";
-import { HeartrateCurrentDisplay, HeartrateHistoryGraph, type HeartrateHistoryAxisSide, type HeartrateSample } from "./HeartrateDisplay";
+import { supabase } from "~/lib/supabaseClient";
+import { difficultyBadge, formatDuration, formatRate, gradeDisplay } from "~/lib/songFormatting";
+import {
+	HeartrateCurrentDisplay,
+	HeartrateHistoryGraph,
+	HEART_IMAGE_PRESETS,
+	type CalorieIconStyle,
+	type HeartIconStyle,
+	type HeartImagePresetKey,
+	type HeartrateHistoryAxisSide,
+	type HeartrateSample,
+} from "./HeartrateDisplay";
 import SensorBar, { maxSensorVal } from "./SensorBar";
 import TimeSeriesGraph from "./TimeSeriesGraph";
 
@@ -24,6 +34,23 @@ export type OBSComponentDialogProps = {
 };
 
 type ComponentType = "graph" | "sensors" | "heartrate" | "songs";
+
+// Mirrors HeartIconStyle from HeartrateDisplay.tsx -- kept as a runtime
+// Set (rather than importing a type) so an unrecognized/garbled query
+// param value from a pasted-in URL falls back to the default.
+const VALID_HEART_ICON_STYLES = new Set<string>([
+	"classic",
+	"pixel",
+	"canada",
+	"dragon",
+	"halloweenHeart",
+	"halloweenBat",
+	"flatHeart",
+	"jokr",
+	"retro",
+	"usa",
+	"custom",
+]);
 
 interface GraphConfig {
 	timeWindow: number;
@@ -78,6 +105,10 @@ interface HeartrateConfig {
 	zoneHighColor: string;
 	bpmFontSize: number;
 	caloriesFontSize: number;
+	heartIconSize: number;
+	heartIconStyle: HeartIconStyle;
+	customHeartImageUrl: string | null;
+	calorieIconStyle: CalorieIconStyle;
 	timeWindow: number;
 	containerBackgroundColor: string;
 	heartColor: string;
@@ -278,6 +309,10 @@ const DEFAULT_CONFIGS = {
 		zoneHighColor: "rgba(239, 68, 68, 1)",
 		bpmFontSize: 220,
 		caloriesFontSize: 24,
+		heartIconSize: 84,
+		heartIconStyle: "classic",
+		customHeartImageUrl: null,
+		calorieIconStyle: "flame",
 		timeWindow: 30,
 		containerBackgroundColor: "rgba(0, 0, 0, 0.35)",
 		heartColor: "rgba(239, 68, 68, 1)",
@@ -317,6 +352,8 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 		sensorLabels: activeProfile?.sensorLabels || [],
 	}));
 	const [heartrateConfig, setHeartrateConfig] = useState<HeartrateConfig>(DEFAULT_CONFIGS.heartrate);
+	const [customHeartUploading, setCustomHeartUploading] = useState(false);
+	const [customHeartUploadError, setCustomHeartUploadError] = useState<string | null>(null);
 	const [songsConfig, setSongsConfig] = useState<SongTickerConfig>(DEFAULT_CONFIGS.songs);
 	const [url, setUrl] = useState("");
 	const [copied, setCopied] = useState(false);
@@ -643,6 +680,18 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 			if (heartrateConfig.caloriesFontSize !== DEFAULT_CONFIGS.heartrate.caloriesFontSize) {
 				params.set("caloriesSize", String(heartrateConfig.caloriesFontSize));
 			}
+			if (heartrateConfig.heartIconSize !== DEFAULT_CONFIGS.heartrate.heartIconSize) {
+				params.set("heartSize", String(heartrateConfig.heartIconSize));
+			}
+			if (heartrateConfig.heartIconStyle !== DEFAULT_CONFIGS.heartrate.heartIconStyle) {
+				params.set("heartStyle", heartrateConfig.heartIconStyle);
+			}
+			if (heartrateConfig.heartIconStyle === "custom" && heartrateConfig.customHeartImageUrl) {
+				params.set("heartImage", heartrateConfig.customHeartImageUrl);
+			}
+			if (heartrateConfig.calorieIconStyle !== DEFAULT_CONFIGS.heartrate.calorieIconStyle) {
+				params.set("calorieIcon", heartrateConfig.calorieIconStyle);
+			}
 			if (heartrateConfig.timeWindow !== DEFAULT_CONFIGS.heartrate.timeWindow) {
 				params.set("window", heartrateConfig.timeWindow.toString());
 			}
@@ -715,6 +764,38 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 
 	const updateHeartrateConfig = (updates: Partial<HeartrateConfig>) => {
 		setHeartrateConfig((prev) => ({ ...prev, ...updates }));
+	};
+
+	// Uploads a user-picked image to the public "hearts" Supabase Storage
+	// bucket (same pattern as the song banner upload in usePublishSongs.ts)
+	// and stores the resulting public URL in config, so it can travel in
+	// the generated OBS URL as a plain heartImage=<url> param -- passing
+	// the raw file/data URL instead would make the URL enormous and often
+	// exceed what OBS's browser source (and some URL bars) will accept.
+	const uploadCustomHeartImage = async (file: File) => {
+		setCustomHeartUploading(true);
+		setCustomHeartUploadError(null);
+		try {
+			const ext = (file.name.split(".").pop() || "png").toLowerCase().slice(0, 5);
+			const path = `custom/${Date.now()}-${Math.round(Math.random() * 1e6)}.${ext}`;
+
+			const { error: uploadError } = await supabase.storage.from("hearts").upload(path, file, {
+				contentType: file.type || "image/png",
+				upsert: true,
+			});
+
+			if (uploadError) {
+				setCustomHeartUploadError(uploadError.message);
+				return;
+			}
+
+			const publicUrl = supabase.storage.from("hearts").getPublicUrl(path).data.publicUrl;
+			updateHeartrateConfig({ heartIconStyle: "custom", customHeartImageUrl: publicUrl });
+		} catch (err) {
+			setCustomHeartUploadError(err instanceof Error ? err.message : "Couldn't upload that image.");
+		} finally {
+			setCustomHeartUploading(false);
+		}
 	};
 
 	const updateSongsConfig = (updates: Partial<SongTickerConfig>) => {
@@ -854,6 +935,16 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 				heartrateConfig.zoneHighColor = params.get("zoneHighColor") || DEFAULT_CONFIGS.heartrate.zoneHighColor;
 				heartrateConfig.bpmFontSize = Math.max(40, Math.min(400, Number(params.get("bpmSize")) || DEFAULT_CONFIGS.heartrate.bpmFontSize));
 				heartrateConfig.caloriesFontSize = Math.max(10, Math.min(120, Number(params.get("caloriesSize")) || DEFAULT_CONFIGS.heartrate.caloriesFontSize));
+				heartrateConfig.heartIconSize = Math.max(24, Math.min(400, Number(params.get("heartSize")) || DEFAULT_CONFIGS.heartrate.heartIconSize));
+
+				const heartStyle = params.get("heartStyle");
+				heartrateConfig.heartIconStyle = VALID_HEART_ICON_STYLES.has(heartStyle ?? "")
+					? (heartStyle as HeartIconStyle)
+					: DEFAULT_CONFIGS.heartrate.heartIconStyle;
+				heartrateConfig.customHeartImageUrl = params.get("heartImage") || DEFAULT_CONFIGS.heartrate.customHeartImageUrl;
+
+				const calorieIconStyle = params.get("calorieIcon");
+				heartrateConfig.calorieIconStyle = calorieIconStyle === "pixel" ? "pixel" : DEFAULT_CONFIGS.heartrate.calorieIconStyle;
 
 				const heartrateWindow = params.get("window");
 				if (heartrateWindow) heartrateConfig.timeWindow = Number(heartrateWindow);
@@ -996,39 +1087,48 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 		if (selectedComponent === "songs") {
 			const songsConfig = config as SongTickerConfig;
 			const mockSongs = [
-				{ title: "BOSSY (Jorts Speedy Mix)", artist: "BABYPOWDER", style: "single", difficultyName: "Challenge", difficulty: 12, grade: "Tier06", passed: true, score: "92.46", avgHr: 61, maxHr: 67, calories: 3, durationSeconds: 132 },
-				{ title: "Save New Jersey", artist: "Save New Jersey", style: "single", difficultyName: "Challenge", difficulty: 13, grade: "Tier04", passed: true, score: "97.10", avgHr: 67, maxHr: 75, calories: 5, durationSeconds: 139 },
-				{ title: "NO MORE GAMES", artist: "Various Artists (mixed by Rems)", style: "single", difficultyName: "Challenge", difficulty: 24, grade: "Tier17", passed: false, score: "0.39", avgHr: null, maxHr: null, calories: null, durationSeconds: 75 },
-			].slice(0, songsConfig.count);
+				{ title: "BOSSY (Jorts Speedy Mix)", artist: "BABYPOWDER", style: "single", difficultyName: "Challenge", difficulty: 12, grade: "Tier06", passed: true, score: "92.46", avgHr: 61, maxHr: 67, calories: 3, durationSeconds: 132, rate: 1.2 },
+				{ title: "Save New Jersey", artist: "Save New Jersey", style: "single", difficultyName: "Challenge", difficulty: 13, grade: "Tier04", passed: true, score: "97.10", avgHr: 67, maxHr: 75, calories: 5, durationSeconds: 139, rate: 1.0 },
+				{ title: "NO MORE GAMES", artist: "Various Artists (mixed by Rems)", style: "single", difficultyName: "Challenge", difficulty: 24, grade: "Tier17", passed: false, score: "0.39", avgHr: null, maxHr: null, calories: null, durationSeconds: 75, rate: 1.0 },
+			]
+				.slice(0, songsConfig.count);
 
 			return (
-				<div className="w-full h-full bg-black overflow-hidden p-2 flex flex-col gap-2 justify-end">
+				<div className="w-full h-full bg-black overflow-hidden p-1.5 flex flex-col items-start gap-1.5 justify-end">
 					{mockSongs.map((song) => {
 						const { label: gradeLabel, className: gradeClassName } = gradeDisplay(song.grade, song.passed, song.score);
+						const rateLabel = formatRate(song.rate);
 						return (
 							<div
 								key={song.title}
-								className="flex items-center gap-3 rounded-lg overflow-hidden px-3 py-2.5"
+								className="flex items-center gap-2 rounded-md overflow-hidden px-2 py-1.5 self-start w-fit max-w-full"
 								style={{ backgroundColor: songsConfig.containerBackgroundColor, color: songsConfig.textColor }}
 							>
-								{songsConfig.showBanner && <div className="w-16 h-[47px] rounded shrink-0 bg-white/10" />}
+								{songsConfig.showBanner && <div className="w-14 h-[24px] rounded shrink-0 bg-white/10" />}
 								<div className="min-w-0 flex-1">
-									<div className="font-semibold text-sm truncate">{song.title}</div>
-									<div className="text-xs opacity-70 truncate">{song.artist}</div>
-									<span className="inline-block mt-1 px-1.5 py-0.5 text-[10px] font-bold rounded bg-red-600 text-white">
-										{difficultyBadge(song.style, song.difficultyName, song.difficulty)}
-									</span>
+									<div className="font-semibold text-[11px] leading-tight truncate">{song.title}</div>
+									<div className="text-[9px] opacity-70 leading-tight truncate">{song.artist}</div>
+									<div className="flex items-center gap-1 mt-0.5">
+										<span className="inline-block px-1 py-px text-[8px] font-bold rounded bg-red-600 text-white">
+											{difficultyBadge(song.style, song.difficultyName, song.difficulty)}
+										</span>
+										{rateLabel && (
+											<span className="inline-block px-1 py-px text-[8px] font-bold rounded bg-violet-600 text-white">
+												{rateLabel}
+											</span>
+										)}
+									</div>
 								</div>
 								{songsConfig.showGrade && (
-									<div className="flex flex-col items-center gap-0.5 shrink-0">
-										<span className={`inline-flex items-center justify-center min-w-[2.5rem] px-1.5 py-0.5 rounded font-bold text-xs tabular-nums ${gradeClassName}`}>
+									<div className="flex flex-col items-center gap-px shrink-0">
+										<span className={`inline-flex items-center justify-center min-w-[1.75rem] px-1 py-px rounded font-bold text-[10px] tabular-nums ${gradeClassName}`}>
 											{gradeLabel}
 										</span>
-										<span className="text-[10px] opacity-70 tabular-nums">{song.score}%</span>
+										<span className="text-[8px] opacity-70 tabular-nums">{song.score}%</span>
 									</div>
 								)}
 								{songsConfig.showStats && (
-									<div className="flex items-center gap-2.5 text-[10px] shrink-0">
+									<div className="flex items-center gap-1.5 text-[8px] shrink-0">
 										<div className="text-center">
 											<div className="opacity-60 uppercase tracking-wide">HR</div>
 											<div className="tabular-nums">{song.avgHr ?? "—"}</div>
@@ -1098,6 +1198,10 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 						zoneHighColor={heartrateConfig.zoneHighColor}
 						bpmFontSize={heartrateConfig.bpmFontSize}
 						caloriesFontSize={heartrateConfig.caloriesFontSize}
+						heartIconSize={heartrateConfig.heartIconSize}
+						heartIconStyle={heartrateConfig.heartIconStyle}
+						customHeartImageUrl={heartrateConfig.customHeartImageUrl}
+						calorieIconStyle={heartrateConfig.calorieIconStyle}
 					/>
 				)}
 			</div>
@@ -1834,6 +1938,81 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 														}
 													/>
 												</div>
+												{(config as HeartrateConfig).showHeartVisual && (
+													<div className="space-y-3 rounded-md border p-3">
+														<div className="flex items-center justify-between gap-3">
+															<Label htmlFor="hrHeartIconSize" className="text-sm">
+																Heart icon size
+															</Label>
+															<span className="text-xs text-muted-foreground">{(config as HeartrateConfig).heartIconSize}px</span>
+														</div>
+														<Slider
+															id="hrHeartIconSize"
+															value={[(config as HeartrateConfig).heartIconSize]}
+															min={24}
+															max={240}
+															step={2}
+															onValueChange={(value) =>
+																updateHeartrateConfig({ heartIconSize: value[0] ?? (config as HeartrateConfig).heartIconSize })
+															}
+														/>
+														<div className="flex items-center justify-between gap-3 pt-1">
+															<Label htmlFor="hrHeartIconStyle" className="text-sm">
+																Heart icon style
+															</Label>
+															<Select
+																value={(config as HeartrateConfig).heartIconStyle}
+																onValueChange={(value: HeartIconStyle) => updateHeartrateConfig({ heartIconStyle: value })}
+															>
+																<SelectTrigger id="hrHeartIconStyle" className="w-[160px]">
+																	<SelectValue />
+																</SelectTrigger>
+																<SelectContent>
+																	<SelectItem value="classic">Classic</SelectItem>
+																	<SelectItem value="pixel">Retro pixel</SelectItem>
+																	{(Object.entries(HEART_IMAGE_PRESETS) as [HeartImagePresetKey, { label: string; src: string }][]).map(
+																		([key, preset]) => (
+																			<SelectItem key={key} value={key}>
+																				{preset.label}
+																			</SelectItem>
+																		),
+																	)}
+																	<SelectItem value="custom">Custom image…</SelectItem>
+																</SelectContent>
+															</Select>
+														</div>
+														{(config as HeartrateConfig).heartIconStyle === "custom" && (
+															<div className="space-y-2 pt-1">
+																<div className="flex items-center gap-3">
+																	{(config as HeartrateConfig).customHeartImageUrl && (
+																		<img
+																			src={(config as HeartrateConfig).customHeartImageUrl ?? undefined}
+																			alt=""
+																			className="h-10 w-10 rounded object-contain border bg-white/5"
+																		/>
+																	)}
+																	<Input
+																		type="file"
+																		accept="image/png,image/jpeg,image/webp,image/gif,image/apng"
+																		disabled={customHeartUploading}
+																		onChange={(e) => {
+																			const file = e.target.files?.[0];
+																			if (file) void uploadCustomHeartImage(file);
+																			e.target.value = "";
+																		}}
+																		className="text-xs"
+																	/>
+																</div>
+																<p className="text-xs text-muted-foreground">
+																	{customHeartUploading
+																		? "Uploading…"
+																		: "Pulses and resizes just like the built-in styles. Recolor/zone-color options won't apply to your image."}
+																</p>
+																{customHeartUploadError && <p className="text-xs text-destructive">{customHeartUploadError}</p>}
+															</div>
+														)}
+													</div>
+												)}
 												{(config as HeartrateConfig).showCalories && (
 													<div className="space-y-3 rounded-md border p-3">
 														<div className="flex items-center justify-between gap-3">
@@ -1852,6 +2031,23 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 																updateHeartrateConfig({ caloriesFontSize: value[0] ?? (config as HeartrateConfig).caloriesFontSize })
 															}
 														/>
+														<div className="flex items-center justify-between gap-3 pt-1">
+															<Label htmlFor="hrCalorieIconStyle" className="text-sm">
+																Calorie icon style
+															</Label>
+															<Select
+																value={(config as HeartrateConfig).calorieIconStyle}
+																onValueChange={(value: CalorieIconStyle) => updateHeartrateConfig({ calorieIconStyle: value })}
+															>
+																<SelectTrigger id="hrCalorieIconStyle" className="w-[140px]">
+																	<SelectValue />
+																</SelectTrigger>
+																<SelectContent>
+																	<SelectItem value="flame">Flame</SelectItem>
+																	<SelectItem value="pixel">Retro pixel</SelectItem>
+																</SelectContent>
+															</Select>
+														</div>
 													</div>
 												)}
 												<div className="flex items-center space-x-2">

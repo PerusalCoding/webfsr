@@ -65,6 +65,7 @@ interface SongHistoryBridge {
 	selectInstallFolder: () => Promise<string | null>;
 	getInstallFolder: () => Promise<string | null>;
 	getAllSongs: () => Promise<SongLogEntry[]>;
+	deleteEntries: (startTimes: number[]) => Promise<SongLogEntry[]>;
 	onSongLogUpdate: (callback: (entries: SongLogEntry[]) => void) => () => void;
 	sendHeartrateSample: (sample: HeartrateSample) => void;
 	savePublishConfig: (config: { playerName: string; publishEnabled: boolean; liveFeedEnabled: boolean }) => void;
@@ -134,6 +135,19 @@ export function useSongHistory() {
 		setInstallFolder(path);
 	}, []);
 
+	// Deletes one or more local history entries by startTime (epoch
+	// seconds) -- used by the "clear this play" / "clear this day" /
+	// "clear all history" controls. Rewrites the underlying log file on
+	// the main-process side; the file watcher will also push a
+	// 'song-log:updated' event from that write, but we set state directly
+	// here too so the UI updates instantly rather than waiting on it.
+	const deleteEntries = useCallback(async (startTimes: number[]) => {
+		const bridge = window.songHistoryBridge;
+		if (!bridge || startTimes.length === 0) return;
+		const updated = await bridge.deleteEntries(startTimes);
+		setSongs(updated);
+	}, []);
+
 	// Call this whenever a new HR sample comes in from useHeartrateMonitor.
 	// Throttled to ~1/sec -- that's plenty of resolution for per-song
 	// avg/max HR and keeps the log file from growing too fast.
@@ -156,6 +170,7 @@ export function useSongHistory() {
 		selectFolder,
 		selectInstallFolder,
 		recordHeartrateSample,
+		deleteEntries,
 	};
 }
 

@@ -508,6 +508,46 @@ function readSongLog() {
   }
 }
 
+// Deletes song log entries by startTime (epoch seconds) -- used by "clear
+// this play" / "clear this day" / "clear all history" in the UI. Rewrites
+// the whole file rather than seeking around in it since it's small and
+// this only runs on an explicit user action, not on a hot path.
+function deleteSongLogEntries(startTimes) {
+  const logPath = getSongLogPath()
+  if (!logPath || !fs.existsSync(logPath)) return readSongLog()
+  if (!Array.isArray(startTimes) || startTimes.length === 0) return readSongLog()
+
+  const toDelete = new Set(startTimes)
+
+  try {
+    const content = fs.readFileSync(logPath, 'utf8')
+    const rawLines = content.split(/\r?\n/).filter(Boolean)
+    const keptLines = []
+
+    for (const line of rawLines) {
+      let entry
+      try {
+        entry = JSON.parse(line)
+      } catch {
+        // Can't tell if an unparsable line is safe to drop -- keep it.
+        keptLines.push(line)
+        continue
+      }
+
+      if (typeof entry.startTime === 'number' && toDelete.has(entry.startTime)) {
+        continue // this is the one being deleted
+      }
+      keptLines.push(line)
+    }
+
+    fs.writeFileSync(logPath, keptLines.join('\n') + (keptLines.length > 0 ? '\n' : ''))
+  } catch (err) {
+    console.error('[song-log] failed to delete entries:', err)
+  }
+
+  return readSongLog()
+}
+
 function watchSongLog(win) {
   const logPath = getSongLogPath()
   if (!logPath) return
@@ -859,6 +899,13 @@ ipcMain.handle('song-log:select-install-folder', async () => {
 ipcMain.handle('song-log:get-install-folder', () => getInstallRoot())
 
 ipcMain.handle('song-log:get-all', () => readSongLog())
+
+// Deletes local song history entries by startTime (epoch seconds). Used
+// by the "clear this play" / "clear this day" / "clear all history"
+// controls in the UI. Returns the updated full entry list so the
+// renderer can update instantly, in addition to the normal
+// 'song-log:updated' push the file watcher fires from the write.
+ipcMain.handle('song-log:delete-entries', (event, startTimes) => deleteSongLogEntries(startTimes))
 
 ipcMain.handle('song-log:get-media-base-url', () => `http://127.0.0.1:${MEDIA_SERVER_PORT}`)
 

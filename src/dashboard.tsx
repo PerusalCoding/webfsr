@@ -783,7 +783,7 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition, nu
 
 					<Button variant="outline" size="sm" className="w-full text-xs" disabled={!connected}
 						onClick={() => sendText("q\n")}>
-						Sync from pad
+						Sync LEDs from Pad
 					</Button>
 
 					{!connected && (
@@ -845,6 +845,21 @@ function scopedKey(base: string, deviceId: string | null): string {
 }
 
 const LS_TUNING_KEY = "webfsr_sensor_tuning_v3";
+
+// Shared with the "reset to default" buttons on Gain and Release Debounce --
+// kept as named constants, in one place, so the displayed "Default: ..." text
+// and the reset buttons can never drift out of sync with each other or with
+// the fallback values used elsewhere in this file (loadTuning, the
+// numSensors-resize effect, etc.).
+const DEFAULT_GAIN_X100 = 100;
+const DEFAULT_RELEASE_DEBOUNCE_MS = 15;
+
+// Release's default isn't a fixed number -- it's always 20 below whatever
+// Trigger currently is, clamped so it can't go negative for a very low
+// Trigger. Used by both the "(default ...)" label and the reset button next
+// to the main bar's Release readout.
+const RELEASE_DEFAULT_GAP = 20;
+const defaultReleaseFor = (trigger: number | undefined) => Math.max(0, (trigger ?? 512) - RELEASE_DEFAULT_GAP);
 
 // "Lock Release to Trigger" per-sensor toggle (main-page bar controls,
 // separate from the sidebar's tuning array) -- was previously plain
@@ -989,9 +1004,6 @@ function SensorTuningSection({
 }: SensorTuningSectionProps) {
 	const effectiveCount = numSensors > 0 ? numSensors : 4;
 	const [tuning, setTuning] = useState<SensorTuning[]>(() => loadTuning(effectiveCount, deviceId));
-	const [tuningOpen, setTuningOpen] = useState<boolean>(false);
-	const tuningDrag = useRowDragReorder(moveDisplayPosition);
-	const [expandedSensor, setExpandedSensor] = useState<number | null>(null);
 
 	// deviceId arrives asynchronously (only known once the identify
 	// response comes back after connecting), so the useState initializer
@@ -1103,8 +1115,6 @@ function SensorTuningSection({
 		if (!connected) hasQueriedRef.current = false;
 	}, [connected, sendText, effectiveCount]);
 
-	const sendTrigger = (i: number, val: number) => { if (connected) sendText(`y ${i} ${val}\n`); };
-	const sendRelease = (i: number, val: number) => { if (connected) sendText(`r ${i} ${val}\n`); };
 	const sendGain    = (i: number, val: number) => { if (connected) sendText(`g ${i} ${val}\n`); };
 	const sendButtonGroup = (i: number, group: number) => { if (connected) sendText(`m ${i} ${group}\n`); };
 	const sendReleaseDebounce = (i: number, ms: number) => { if (connected) sendText(`d ${i} ${ms}\n`); };
@@ -1115,241 +1125,33 @@ function SensorTuningSection({
 		saveTuning(updated, deviceId);
 	};
 
-	const commitTrigger = (i: number, val: number) => { updateTuning(i, { trigger: val }); sendTrigger(i, val); };
-	const commitRelease = (i: number, val: number) => { updateTuning(i, { release: val }); sendRelease(i, val); };
 	const commitGain    = (i: number, val: number) => { updateTuning(i, { gainX100: val }); sendGain(i, val); };
 	const commitButtonGroup = (i: number, group: number) => { updateTuning(i, { buttonGroup: group }); sendButtonGroup(i, group); };
 	const commitReleaseDebounce = (i: number, ms: number) => { updateTuning(i, { releaseDebounceMs: ms }); sendReleaseDebounce(i, ms); };
 
-	// Quick presets for common situations
-	const applyFastRetriggerPreset = (i: number) => {
-		// Wide gap, biased toward easy re-arming for rapid double-taps.
-		const t = { trigger: 750, release: 250, gainX100: tuning[i]?.gainX100 ?? 100 };
-		updateTuning(i, t);
-		sendTrigger(i, t.trigger);
-		sendRelease(i, t.release);
-	};
-	const applyStablePreset = (i: number) => {
-		// Narrower gap, closer to original single-threshold feel.
-		const t = { trigger: 550, release: 450, gainX100: tuning[i]?.gainX100 ?? 100 };
-		updateTuning(i, t);
-		sendTrigger(i, t.trigger);
-		sendRelease(i, t.release);
-	};
-	const applyWeakFsrBoostPreset = (i: number) => {
-		// For UX FSR 406 or other low-output sensors -- boost gain first.
-		updateTuning(i, { gainX100: 180 });
-		sendGain(i, 180);
-	};
-
 	return (
-		<div className="p-3 border rounded bg-white dark:bg-neutral-900">
-			<button
-				className="flex items-center justify-between w-full text-left mb-0"
-				onClick={() => setTuningOpen((o) => !o)}
-			>
-				<span className="text-sm font-semibold">Sensor Tuning</span>
-				<span className="text-xs text-muted-foreground">{tuningOpen ? "▲" : "▼"}</span>
-			</button>
-
-			{tuningOpen && (
-				<div className="mt-3 flex flex-col gap-3">
-					{/* Advanced mode toggle — hides trigger/release/gain controls
-					    behind an explicit opt-in so casual users aren't shown
-					    settings they don't need, while still being one click
-					    away for players tuning for very fast play. */}
-					<div className="flex items-center justify-between p-2 border border-border rounded bg-muted/30">
-						<div className="flex flex-col gap-0.5">
-							<span className="text-xs font-medium">Advanced mode</span>
-							<span className="text-[10px] text-muted-foreground">
-								Per-sensor trigger/release thresholds and gain
-							</span>
-						</div>
-						<button
-							role="switch"
-							aria-checked={advancedEnabled}
-							onClick={toggleAdvancedMode}
-							className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ${
-								advancedEnabled ? "bg-foreground" : "bg-muted-foreground/30"
-							}`}
-						>
-							<span
-								className={`inline-block h-3.5 w-3.5 transform rounded-full bg-background transition-transform ${
-									advancedEnabled ? "translate-x-5" : "translate-x-1"
-								}`}
-							/>
-						</button>
-					</div>
-
-					{!advancedEnabled && (
-						<p className="text-[11px] text-muted-foreground italic">
-							Enable advanced mode to access per-sensor trigger/release thresholds and gain.
-							Useful for fixing missed double-taps on fast repeated hits.
-						</p>
-					)}
-
-					{advancedEnabled && (
-						<>
-							<p className="text-[11px] text-muted-foreground">
-								Fine-tune trigger/release thresholds and gain per sensor. A wider gap between
-								Trigger and Release helps catch fast repeated hits (e.g. Down-Up-Down streams)
-								that a single threshold can miss.
-							</p>
-
-							{Array.from({ length: effectiveCount }, (_, position) => {
-								const i = displayOrder.length === effectiveCount ? (displayOrder[position] ?? position) : position;
-								const t = tuning[i] ?? { trigger: 700, release: 300, gainX100: 100, buttonGroup: i, releaseDebounceMs: 15 };
-								const live = latestValues[i] ?? 0;
-								const label = sensorLabels[i] || `Sensor ${i + 1}`;
-								const isExpanded = expandedSensor === i;
-								const gap = t.trigger - t.release;
-								const gapWarning = gap < 100;
-
-
-						return (
-							<div
-								key={i}
-								className={`border border-border rounded p-2 transition-opacity ${tuningDrag.draggingPos === position ? "opacity-40" : ""} ${tuningDrag.dragOverPos === position ? "ring-2 ring-primary" : ""}`}
-								onDragOver={tuningDrag.handleDragOver(position)}
-								onDrop={tuningDrag.handleDrop(position)}
-							>
-								<div className="flex items-center gap-1.5">
-									<DragHandle
-										onDragStart={tuningDrag.handleDragStart(position)}
-										onDragEnd={tuningDrag.handleDragEnd}
-									/>
-									<button
-										className="flex items-center justify-between w-full text-left"
-										onClick={() => setExpandedSensor(isExpanded ? null : i)}
-									>
-										<span className="text-xs font-medium">{label} <span className="text-muted-foreground font-mono">#{i}</span></span>
-										<div className="flex items-center gap-2">
-											<span className="text-[10px] font-mono text-muted-foreground">live: {live}</span>
-											<span className="text-xs text-muted-foreground">{isExpanded ? "▲" : "▼"}</span>
-										</div>
-									</button>
-								</div>
-
-								{isExpanded && (
-									<div className="mt-2 flex flex-col gap-2">
-										{/* Live value bar with trigger/release markers */}
-										<div className="relative h-3 bg-muted rounded overflow-hidden">
-											<div
-												className="absolute inset-y-0 left-0 bg-blue-400/40"
-												style={{ width: `${(live / 1023) * 100}%` }}
-											/>
-											<div
-												className="absolute inset-y-0 w-0.5 bg-red-500"
-												style={{ left: `${(t.trigger / 1023) * 100}%` }}
-												title={`Trigger: ${t.trigger}`}
-											/>
-											<div
-												className="absolute inset-y-0 w-0.5 bg-green-500"
-												style={{ left: `${(t.release / 1023) * 100}%` }}
-												title={`Release: ${t.release}`}
-											/>
-										</div>
-										<div className="flex justify-between text-[9px] text-muted-foreground">
-											<span>0</span><span>1023</span>
-										</div>
-
-										{/* Trigger threshold */}
-										<div className="flex flex-col gap-1">
-											<div className="flex items-center justify-between">
-												<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
-													Trigger (ON)
-												</label>
-												<input
-													type="number" min={0} max={1023} value={t.trigger}
-													className="w-14 text-xs font-mono text-red-500 bg-transparent border border-border rounded px-1 py-0.5 text-right focus:outline-none focus:ring-1 focus:ring-ring"
-													onChange={(e) => {
-														const v = Math.max(0, Math.min(1023, Number(e.target.value) || 0));
-														updateTuning(i, { trigger: v });
-													}}
-													onBlur={(e) => commitTrigger(i, Math.max(0, Math.min(1023, Number(e.target.value) || 0)))}
-												/>
-											</div>
-											<input
-												type="range" min={0} max={1023} step={5} value={t.trigger}
-												className="w-full h-1.5 accent-red-500 cursor-pointer"
-												onChange={(e) => updateTuning(i, { trigger: Number(e.target.value) })}
-												onMouseUp={(e) => commitTrigger(i, Number((e.target as HTMLInputElement).value))}
-												onTouchEnd={(e) => commitTrigger(i, Number((e.target as HTMLInputElement).value))}
-											/>
-										</div>
-
-										{/* Release threshold */}
-										<div className="flex flex-col gap-1">
-											<div className="flex items-center justify-between">
-												<label className="text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
-													Release (OFF)
-												</label>
-												<input
-													type="number" min={0} max={1023} value={t.release}
-													className="w-14 text-xs font-mono text-green-500 bg-transparent border border-border rounded px-1 py-0.5 text-right focus:outline-none focus:ring-1 focus:ring-ring"
-													onChange={(e) => {
-														const v = Math.max(0, Math.min(1023, Number(e.target.value) || 0));
-														updateTuning(i, { release: v });
-													}}
-													onBlur={(e) => commitRelease(i, Math.max(0, Math.min(1023, Number(e.target.value) || 0)))}
-												/>
-											</div>
-											<input
-												type="range" min={0} max={1023} step={5} value={t.release}
-												className="w-full h-1.5 accent-green-500 cursor-pointer"
-												onChange={(e) => updateTuning(i, { release: Number(e.target.value) })}
-												onMouseUp={(e) => commitRelease(i, Number((e.target as HTMLInputElement).value))}
-												onTouchEnd={(e) => commitRelease(i, Number((e.target as HTMLInputElement).value))}
-											/>
-										</div>
-
-										{gapWarning && (
-											<p className="text-[10px] text-amber-500">
-												⚠ Trigger and Release are close together ({gap} apart). A narrow gap
-												can still miss fast double-taps. Try widening to 300+ apart.
-											</p>
-										)}
-
-										{/* Gain, Release Debounce, and Button Group now live as compact
-										    inline controls directly under each sensor's wave in the main
-										    view (see the sensor bar grid render) -- kept out of this panel
-										    so the most frequently-tweaked controls don't require opening
-										    Sensor Tuning and expanding a card just to nudge one value. */}
-
-										{/* Quick presets */}
-										<div className="flex flex-wrap gap-1 mt-1">
-											<Button variant="outline" size="sm" className="text-xs flex-1"
-												onClick={() => applyFastRetriggerPreset(i)}>
-												Fast re-trigger
-											</Button>
-											<Button variant="outline" size="sm" className="text-xs flex-1"
-												onClick={() => applyStablePreset(i)}>
-												Stable / narrow
-											</Button>
-											<Button variant="outline" size="sm" className="text-xs flex-1"
-												onClick={() => applyWeakFsrBoostPreset(i)}>
-												Boost weak FSR
-											</Button>
-										</div>
-									</div>
-								)}
-							</div>
-						);
-					})}
-
-					<Button variant="outline" size="sm" className="w-full text-xs" disabled={!connected}
-						onClick={() => { for (let i = 0; i < effectiveCount; i++) sendText(`p ${i}\n`); }}>
-						Sync from pad
-					</Button>
-						</>
-					)}
-
-					{!connected && (
-						<p className="text-[11px] text-muted-foreground text-center">Connect to pad to tune sensors</p>
-					)}
-				</div>
-			)}
-		</div>
+		// The old collapsible "Sensor Tuning" sidebar panel (Advanced mode
+		// toggle, per-sensor Trigger/Release cards, gap warning, quick
+		// presets) has been removed -- it duplicated controls that now live
+		// on the main page (the "Sensor Tuning: On/Off" toggle, the bar's
+		// Trigger/Release lines, the Release readout + reset, and the
+		// always-visible Gain/Debounce/Button Group mini controls). Only
+		// "Sync Sensor Tuning from Pad" was unique to this panel, so that's
+		// what's kept here -- renamed from the old "Sync from pad" label so
+		// it's not visually identical to LedSection's own (different) sync
+		// button. All of this component's actual state/logic (tuning,
+		// firmware "p" line parsing, the _handleLine/_getSnapshot/
+		// _getControls bridges) is untouched -- only the old duplicate UI
+		// is gone.
+		<Button
+			variant="outline"
+			size="sm"
+			className="w-full text-xs"
+			disabled={!connected}
+			onClick={() => { for (let i = 0; i < effectiveCount; i++) sendText(`p ${i}\n`); }}
+		>
+			Sync Sensor Tuning from Pad
+		</Button>
 	);
 }
 
@@ -1874,7 +1676,20 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 			<div className="flex flex-col gap-0.5">
 				<div className="flex items-center justify-between">
 					<span className="text-muted-foreground">Gain</span>
-					<span className="font-mono text-muted-foreground">{(t.gainX100 / 100).toFixed(2)}x</span>
+					<div className="flex items-center gap-1">
+						<span className="font-mono text-muted-foreground">
+							{(t.gainX100 / 100).toFixed(2)}x
+							<span className="opacity-60"> (default {(DEFAULT_GAIN_X100 / 100).toFixed(2)}x)</span>
+						</span>
+						<button
+							type="button"
+							title={`Reset Gain to default (${(DEFAULT_GAIN_X100 / 100).toFixed(2)}x)`}
+							onClick={() => commitGain(index, DEFAULT_GAIN_X100)}
+							className="text-muted-foreground hover:text-foreground shrink-0"
+						>
+							<RefreshCw className="size-2.5" />
+						</button>
+					</div>
 				</div>
 				<input
 					type="range" min={10} max={500} step={5} value={t.gainX100}
@@ -1887,7 +1702,20 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 			<div className="flex flex-col gap-0.5">
 				<div className="flex items-center justify-between">
 					<span className="text-muted-foreground" title="Release Debounce (ms)">Debounce</span>
-					<span className="font-mono text-muted-foreground">{t.releaseDebounceMs}ms</span>
+					<div className="flex items-center gap-1">
+						<span className="font-mono text-muted-foreground">
+							{t.releaseDebounceMs}ms
+							<span className="opacity-60"> (default {DEFAULT_RELEASE_DEBOUNCE_MS}ms)</span>
+						</span>
+						<button
+							type="button"
+							title={`Reset Debounce to default (${DEFAULT_RELEASE_DEBOUNCE_MS}ms)`}
+							onClick={() => commitReleaseDebounce(index, DEFAULT_RELEASE_DEBOUNCE_MS)}
+							className="text-muted-foreground hover:text-foreground shrink-0"
+						>
+							<RefreshCw className="size-2.5" />
+						</button>
+					</div>
 				</div>
 				<input
 					type="range" min={0} max={100} step={1} value={t.releaseDebounceMs}
@@ -2620,32 +2448,11 @@ const Dashboard = () => {
 	// tuning the moment the main page is touched.
 	const [advancedTuningEnabled, setAdvancedTuningEnabled] = useState<boolean>(loadAdvancedMode);
 	const [mainTab, setMainTab] = useState<"sensors" | "leds" | "songs">("sensors");
+	// Sensor Tuning is Release-only now (see handleThresholdChange) -- Trigger
+	// lives solely in `thresholds` at all times, so there's no second value to
+	// reconcile when this toggles, and no handoff step needed here anymore.
 	const toggleAdvancedTuningMode = useStableCallback(() => {
 		const next = !advancedTuningEnabled;
-		// Going from Advanced -> Basic: the basic model's `thresholds`
-		// array is completely separate state from Advanced's
-		// `liveTriggerValues` and nothing normally keeps them in sync.
-		// Without this handoff, turning Sensor Tuning off either sends
-		// nothing (thresholds still empty, if the basic slider was never
-		// touched) or overwrites the real tuned trigger with a stale/
-		// default value (often 512) -- and in the "sends nothing" case
-		// the firmware is left running on whatever Release value Advanced
-		// mode last set, indefinitely, even though the user believes
-		// they're back to Trigger-only control. Seeding thresholds from
-		// the live trigger values here means the very next
-		// sendAllThresholds() (fired by the effect watching
-		// advancedTuningEnabled) pushes the real current trigger through
-		// the legacy "0 <sensor> <val>" path, which firmware-side
-		// re-derives Release from Trigger automatically.
-		if (advancedTuningEnabled && !next && liveTriggerValues.length) {
-			setThresholds((prev) => {
-				const next = [...prev];
-				liveTriggerValues.forEach((v, i) => {
-					if (typeof v === "number") next[i] = v;
-				});
-				return next;
-			});
-		}
 		setAdvancedTuningEnabled(next);
 		saveAdvancedMode(next);
 	});
@@ -2731,18 +2538,16 @@ const Dashboard = () => {
 			const { index, value } = message as { type: "threshold"; index: number; value: number };
 			handleThresholdChange(index, value);
 		} else if (message.type === "trigger") {
-			// Mirrors handleThresholdChange's Advanced-mode branch -- sent
-			// by mobile instead of "threshold" when the synced profile has
-			// advancedTuningEnabled=true. Updates the same liveTriggerValues
-			// the main page bars use, and sends the same "y" firmware
-			// command Advanced mode already uses when dragging locally.
+			// Trigger is unified into the single basic thresholds model now
+			// (see handleThresholdChange) -- route this the same as
+			// "threshold" instead of writing to liveTriggerValues + a
+			// separate "y" command, so a paired mobile client can't
+			// reintroduce the old stale-value-on-toggle bug through this
+			// path. If the mobile app still decides "trigger" vs
+			// "threshold" based on advancedTuningEnabled, it can keep doing
+			// so safely -- both now land in the same place here.
 			const { index, value } = message as { type: "trigger"; index: number; value: number };
-			setLiveTriggerValues((prev) => {
-				const next = [...prev];
-				next[index] = value;
-				return next;
-			});
-			if (connected) sendText(`y ${index} ${value}\n`);
+			handleThresholdChange(index, value);
 		} else if (message.type === "release") {
 			const { index, value } = message as { type: "release"; index: number; value: number };
 			setLiveReleaseValues((prev) => {
@@ -2904,18 +2709,23 @@ const Dashboard = () => {
 	});
 
 	const sendAllThresholds = () => {
-		// Advanced Tuning owns trigger/release entirely through its own "y"/
-		// "r" commands and EEPROM-persisted state -- the legacy single-
-		// threshold model below is only meaningful when Advanced mode is
-		// off. Sending it while Advanced is on used to silently clobber a
-		// correctly-tuned trigger with whatever was left sitting in the
-		// (possibly stale, possibly still-default) `thresholds` array,
-		// every single time the pad connected or the active profile
-		// changed -- this is what caused Advanced Tuning values to appear
-		// to "reset to 512" even though nothing about the actual tuning
-		// had changed; the firmware's real value was being overwritten
-		// out from under it.
-		if (advancedTuningEnabled) return;
+		// Trigger lives solely in `thresholds` now, in both Sensor Tuning
+		// Off and On (see handleThresholdChange), so this needs to resync
+		// to the firmware on every connect/profile change regardless of
+		// that toggle -- previously this skipped entirely while Advanced
+		// mode was on, which made sense when Trigger had its own separate
+		// "y"-command-driven model, but would now mean a saved profile's
+		// Trigger silently failing to apply on connect whenever Sensor
+		// Tuning happened to be left on.
+		//
+		// NOTE: this still sends the legacy single-value command, which
+		// (per firmware) re-derives Release from Trigger with a narrow
+		// gap -- so a custom Release set via Sensor Tuning will get
+		// pulled back in on every reconnect/profile switch, same as
+		// whenever Trigger is dragged on the main bar. Flagging this
+		// rather than silently working around it since it depends on
+		// exact firmware behavior; if Release should survive reconnects,
+		// this needs to re-send liveReleaseValues right after.
 		if (!connected || !thresholds.length) return;
 
 		thresholds.forEach((value, index) => {
@@ -3019,6 +2829,102 @@ const Dashboard = () => {
 		updateProfile(activeProfileId, getVisualSettingsFromUIState());
 	};
 
+	// ── Profile export / import (.json) ──
+	// A standalone snapshot of everything a profile contains -- the visual
+	// settings ProfilesSection already persists (via getAllSettings/
+	// updateAllSettings), plus thresholds, sensor labels, display order, and
+	// the per-sensor tuning (gain/button group/release debounce/trigger/
+	// release) that lives in SensorTuningSection. This is separate from
+	// FirmwareUpdateSection's "Back Up My Settings": that one is a raw
+	// EEPROM snapshot used around OTA firmware updates specifically; this
+	// one mirrors a saved Profile, meant for sharing a full setup or keeping
+	// an offline copy of it as a portable file.
+	const [profileImportStatus, setProfileImportStatus] = useState<string | null>(null);
+	const profileImportInputRef = useRef<HTMLInputElement>(null);
+
+	const exportProfileToJson = () => {
+		const controls = (SensorTuningSection as unknown as { _getControls?: () => SensorTuningControls })._getControls?.();
+		const snapshot = {
+			kind: "webfsr-profile" as const,
+			savedAt: new Date().toISOString(),
+			name: activeProfile?.name ?? "My Profile",
+			thresholds,
+			sensorLabels,
+			displayOrder,
+			tuning: controls?.tuning ?? [],
+			settings: getVisualSettingsFromUIState(),
+		};
+		const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement("a");
+		const safeName = (snapshot.name || "profile").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-+|-+$)/g, "");
+		a.href = url;
+		a.download = `${safeName || "webfsr-profile"}-${new Date().toISOString().slice(0, 10)}.json`;
+		a.click();
+		URL.revokeObjectURL(url);
+	};
+
+	const importProfileFromJson = async (file: File) => {
+		let parsed: {
+			kind?: string;
+			name?: string;
+			thresholds?: number[];
+			sensorLabels?: string[];
+			displayOrder?: number[];
+			tuning?: SensorTuning[];
+			settings?: Record<string, unknown>;
+		};
+		try {
+			parsed = JSON.parse(await file.text());
+		} catch {
+			setProfileImportStatus("That file isn't valid JSON.");
+			return;
+		}
+		if (parsed?.kind !== "webfsr-profile") {
+			setProfileImportStatus("That doesn't look like a webfsr profile export.");
+			return;
+		}
+
+		if (Array.isArray(parsed.thresholds) && parsed.thresholds.length) {
+			setThresholds(parsed.thresholds);
+			if (activeProfileId) updateThresholds(parsed.thresholds);
+		}
+		if (Array.isArray(parsed.sensorLabels) && parsed.sensorLabels.length) {
+			setSensorLabels(parsed.sensorLabels);
+			if (activeProfileId) updateSensorLabels(parsed.sensorLabels);
+		}
+		if (Array.isArray(parsed.displayOrder)) {
+			setDisplayOrder(parsed.displayOrder);
+		}
+		if (parsed.settings) {
+			updateAllSettings(parsed.settings);
+			if (activeProfileId) updateProfile(activeProfileId, parsed.settings);
+		}
+
+		// Per-sensor tuning -- applied through the same commit functions the
+		// UI itself uses, with a small stagger between commands like
+		// applyBackup does elsewhere, so the firmware's serial buffer isn't
+		// hammered all at once. Trigger/Release go through the same unified
+		// handlers as dragging the main bar (see handleThresholdChange /
+		// handleSecondaryThresholdChange above) rather than a raw "y"/"r"
+		// send, so imported values participate in Lock Release to Trigger
+		// and profile write-back exactly like a manual edit would.
+		const controls = (SensorTuningSection as unknown as { _getControls?: () => SensorTuningControls })._getControls?.();
+		if (Array.isArray(parsed.tuning) && controls) {
+			let delay = 0;
+			const step = 60;
+			parsed.tuning.forEach((s, i) => {
+				if (typeof s.trigger === "number") setTimeout(() => handleThresholdChange(i, s.trigger), (delay += step));
+				if (typeof s.release === "number") setTimeout(() => handleSecondaryThresholdChange(i, s.release), (delay += step));
+				if (typeof s.gainX100 === "number") setTimeout(() => controls.commitGain(i, s.gainX100), (delay += step));
+				if (typeof s.buttonGroup === "number") setTimeout(() => controls.commitButtonGroup(i, s.buttonGroup), (delay += step));
+				if (typeof s.releaseDebounceMs === "number") setTimeout(() => controls.commitReleaseDebounce(i, s.releaseDebounceMs), (delay += step));
+			});
+		}
+
+		setProfileImportStatus(`Imported "${parsed.name ?? "profile"}".`);
+	};
+
 	useEffect(() => {
 		if (!activeProfileId || isSyncingProfile) return;
 
@@ -3065,40 +2971,19 @@ const Dashboard = () => {
 		if (openColorPickers.length !== numSensors) setOpenColorPickers(Array(numSensors).fill(false));
 	}, [numSensors, thresholds.length, sensorLabels.length, openColorPickers.length, activeProfileId]);
 
+	// Trigger (sensitivity) now always goes through the single basic
+	// threshold model, in BOTH Sensor Tuning Off and On -- previously,
+	// turning Sensor Tuning on swapped the main bar's red line over to a
+	// separate `liveTriggerValues` model, and turning it back off seeded
+	// `thresholds` from whatever `liveTriggerValues` held at that moment.
+	// If a sensor's live trigger hadn't been refreshed from the firmware
+	// yet (e.g. its "p" query response hadn't come back), that seed step
+	// baked the stale/default value permanently back into the firmware
+	// the moment Sensor Tuning was closed -- silently changing sensitivity
+	// the user never touched. Sensor Tuning is now Release-only, so
+	// Trigger never has a second value to reconcile.
 	const handleThresholdChange = useStableCallback((index: number, value: number) => {
-		if (advancedTuningEnabled) {
-			// Advanced mode REPLACES the casual single-threshold model
-			// rather than just locking it out -- dragging the main bar's
-			// red (Trigger) line now sends the "y" command directly,
-			// updating the same underlying value the Sensor Tuning panel
-			// controls. liveTriggerValues is updated immediately here
-			// too, rather than waiting on the next "p" response, so the
-			// bar's own line doesn't visually lag behind the drag.
-			const prevTrigger = liveTriggerValues[index];
-			setLiveTriggerValues((prev) => {
-				const next = [...prev];
-				next[index] = value;
-				return next;
-			});
-			if (connected) sendText(`y ${index} ${value}\n`);
-
-			// Lock Release to Trigger: preserve whatever gap existed when
-			// the lock was turned on. Clamped to 0-1023 same as any other
-			// threshold value.
-			if (releaseLocked[index] && typeof prevTrigger === "number") {
-				const delta = value - prevTrigger;
-				const prevRelease = liveReleaseValues[index] ?? 0;
-				const newRelease = Math.max(0, Math.min(1023, prevRelease + delta));
-				setLiveReleaseValues((prev) => {
-					const next = [...prev];
-					next[index] = newRelease;
-					return next;
-				});
-				if (connected) sendText(`r ${index} ${newRelease}\n`);
-			}
-			return;
-		}
-
+		const prevTrigger = thresholds[index];
 		const newThresholds = [...thresholds];
 		newThresholds[index] = value;
 		setThresholds(newThresholds);
@@ -3108,6 +2993,23 @@ const Dashboard = () => {
 		if (connected) {
 			const message = `${index} ${value}\n`;
 			sendText(message);
+		}
+
+		// Lock Release to Trigger: preserve whatever gap existed when the
+		// lock was turned on. Only relevant once Sensor Tuning has been
+		// opened (that's the only place the lock toggle and Release line
+		// are shown), but harmless to check unconditionally. Clamped to
+		// 0-1023 same as any other threshold value.
+		if (advancedTuningEnabled && releaseLocked[index] && typeof prevTrigger === "number") {
+			const delta = value - prevTrigger;
+			const prevRelease = liveReleaseValues[index] ?? 0;
+			const newRelease = Math.max(0, Math.min(1023, prevRelease + delta));
+			setLiveReleaseValues((prev) => {
+				const next = [...prev];
+				next[index] = newRelease;
+				return next;
+			});
+			if (connected) sendText(`r ${index} ${newRelease}\n`);
 		}
 	});
 
@@ -3198,7 +3100,7 @@ const Dashboard = () => {
 						key={`sensor-${index}`}
 						value={latestData?.values[index] || 0}
 						index={index}
-						threshold={advancedTuningEnabled ? (liveTriggerValues[index] ?? thresholds[index] ?? 512) : (thresholds[index] || 512)}
+						threshold={thresholds[index] || 512}
 						onThresholdChange={handleThresholdChange}
 						label={sensorLabels[index] || `Sensor ${index + 1}`}
 						color={
@@ -3219,25 +3121,43 @@ const Dashboard = () => {
 						onSecondaryThresholdChange={advancedTuningEnabled ? handleSecondaryThresholdChange : undefined}
 					/>
 				</div>
-				{/* Lock Release to Trigger toggle -- see the matching comment
-				    in the personal/dev build for why this can't sit inside
-				    SensorBar's own row (external component). Always
-				    mounted at a fixed height, same reasoning as the slot
-				    below it. */}
-				<div className="shrink-0 h-[26px] mt-1 flex items-center justify-center">
+				{/* Release readout + Lock Release to Trigger toggle -- see the
+				    matching comment in the personal/dev build for why this
+				    can't sit inside SensorBar's own row (external
+				    component). Always mounted at a fixed height, same
+				    reasoning as the slot below it. Bumped 26px -> 44px to
+				    fit the Release value/default/reset row above the lock
+				    button. */}
+				<div className="shrink-0 h-[44px] mt-1 flex flex-col items-center justify-center gap-0.5">
 					{advancedTuningEnabled && (
-						<button
-							type="button"
-							onClick={() => setReleaseLocked((prev) => ({ ...prev, [index]: !prev[index] }))}
-							title="When on, moving Trigger also moves Release by the same amount, preserving their gap"
-							className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border transition-colors ${
-								releaseLocked[index]
-									? "bg-foreground text-background border-foreground"
-									: "bg-transparent text-muted-foreground border-border"
-							}`}
-						>
-							{releaseLocked[index] ? "🔒" : "🔓"} Lock Release to Trigger
-						</button>
+						<>
+							<div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+								<span>
+									Release: <span className="text-green-500 font-mono">{liveReleaseValues[index] ?? "—"}</span>
+									<span className="opacity-60"> (default {defaultReleaseFor(thresholds[index])})</span>
+								</span>
+								<button
+									type="button"
+									title={`Reset Release to default (${defaultReleaseFor(thresholds[index])}, 20 below Trigger)`}
+									onClick={() => handleSecondaryThresholdChange(index, defaultReleaseFor(thresholds[index]))}
+									className="text-muted-foreground hover:text-foreground shrink-0"
+								>
+									<RefreshCw className="size-2.5" />
+								</button>
+							</div>
+							<button
+								type="button"
+								onClick={() => setReleaseLocked((prev) => ({ ...prev, [index]: !prev[index] }))}
+								title="When on, moving Trigger also moves Release by the same amount, preserving their gap"
+								className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border transition-colors ${
+									releaseLocked[index]
+										? "bg-foreground text-background border-foreground"
+										: "bg-transparent text-muted-foreground border-border"
+								}`}
+							>
+								{releaseLocked[index] ? "🔒" : "🔓"} Lock Release to Trigger
+							</button>
+						</>
 					)}
 				</div>
 				{/* Always mounted at a fixed height -- only the content inside
@@ -3247,7 +3167,11 @@ const Dashboard = () => {
 				    presence/height was conditional, even after the outer box
 				    became constant-height. */}
 				<div className="shrink-0 h-[152px] mt-1 pt-2 border-t border-border/40">
-					{advancedTuningEnabled && <SensorMiniControls index={index} />}
+					{/* Gain / Release Debounce / Button Group are useful regardless
+					    of whether Sensor Tuning is on -- they don't touch Trigger or
+					    Release, so there's no reason to gate them behind that toggle.
+					    Always mounted now instead of only when advancedTuningEnabled. */}
+					<SensorMiniControls index={index} />
 				</div>
 			</div>
 		);
@@ -3660,6 +3584,45 @@ const Dashboard = () => {
 								resetProfileToDefaults={resetProfileToDefaultsStable}
 							/>
 
+							{/* Export/import the active profile as a portable .json file --
+							    separate from FirmwareUpdateSection's EEPROM backup (that one
+							    is a pre-OTA-update safety snapshot; this one is meant for
+							    sharing a full setup or keeping an offline copy of it).
+							    Stacked full-width, matching Firmware Update's own button
+							    layout just above -- the sidebar column is too narrow for the
+							    label + two buttons to share one row (that squeezed "Load"
+							    against the edge and wrapped the label). */}
+							<div className="flex flex-col gap-2 p-3 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm">
+								<span className="text-sm font-medium">Profile File</span>
+								<Button variant="outline" size="sm" onClick={exportProfileToJson} className="w-full gap-1.5">
+									<Download className="size-3.5" />
+									Save as JSON
+								</Button>
+								<Button
+									variant="outline"
+									size="sm"
+									onClick={() => profileImportInputRef.current?.click()}
+									className="w-full gap-1.5"
+								>
+									<Upload className="size-3.5" />
+									Load from JSON
+								</Button>
+								{profileImportStatus && (
+									<p className="text-xs text-muted-foreground">{profileImportStatus}</p>
+								)}
+								<input
+									ref={profileImportInputRef}
+									type="file"
+									accept="application/json"
+									className="hidden"
+									onChange={(e) => {
+										const file = e.target.files?.[0];
+										if (file) void importProfileFromJson(file);
+										e.target.value = "";
+									}}
+								/>
+							</div>
+
 							<OBSSection
 								obsConnected={obsConnected}
 								obsConnecting={obsConnecting}
@@ -3854,9 +3817,9 @@ const Dashboard = () => {
 								<div className="px-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm grow">
 									{advancedTuningEnabled && (
 										<p className="text-[11px] text-amber-500 px-1 pt-2">
-											Advanced Sensor Tuning is on — drag the red line for Trigger,
-											the green dashed line for Release. Click closest to whichever
-											line you want to move.
+											Sensor Tuning is on — drag the green dashed line to adjust
+											Release. The red line (Trigger/sensitivity) works the same
+											as always and isn't affected by this toggle.
 										</p>
 									)}
 									<div className="grid grid-flow-col auto-cols-fr gap-4 h-full w-full py-2">{sensorBars}</div>

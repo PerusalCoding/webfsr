@@ -1,6 +1,30 @@
 import { Flame, Heart } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
+// "classic" is the existing lucide Heart/Flame glyph; "pixel" is a retro
+// 8-bit-style blocky glyph built from PIXEL_GLYPH bitmaps below; the named
+// keys are the bundled preset images (see HEART_IMAGE_PRESETS); "custom" is
+// a user-supplied image URL, passed in via customHeartImageUrl. Presets and
+// "custom" render as an <img>, not currentColor, so heartColor/zone
+// coloring only affects "classic" and "pixel".
+export type HeartImagePresetKey = "canada" | "dragon" | "halloweenHeart" | "halloweenBat" | "flatHeart" | "jokr" | "retro" | "usa";
+export type HeartIconStyle = "classic" | "pixel" | HeartImagePresetKey | "custom";
+export type CalorieIconStyle = "flame" | "pixel";
+
+// Bundled image assets -- copy the files from the "hearts" output folder
+// into this project's public/hearts/ directory so these paths resolve for
+// both the in-app preview and the standalone OBS browser-source page.
+export const HEART_IMAGE_PRESETS: Record<HeartImagePresetKey, { label: string; src: string }> = {
+	canada: { label: "Canada", src: "/hearts/canada.png" },
+	dragon: { label: "Dragon", src: "/hearts/dragon.png" },
+	halloweenHeart: { label: "Halloween Heart", src: "/hearts/halloween-heart.png" },
+	halloweenBat: { label: "Halloween Bat", src: "/hearts/halloween-bat.png" },
+	flatHeart: { label: "Flat Heart", src: "/hearts/flat-heart.png" },
+	jokr: { label: "Joker", src: "/hearts/jokr.png" },
+	retro: { label: "Retro", src: "/hearts/retro.png" },
+	usa: { label: "USA", src: "/hearts/usa.png" },
+};
+
 type HeartrateCurrentDisplayProps = {
 	heartrate: number | null;
 	animateHeartbeat: boolean;
@@ -23,6 +47,19 @@ type HeartrateCurrentDisplayProps = {
 	zoneLowColor?: string;
 	zoneMidColor?: string;
 	zoneHighColor?: string;
+	bpmFontSize?: number;
+	caloriesFontSize?: number;
+	// Icon size + style are independent: size controls how big the glyph
+	// renders (heartIconSize also scales the round shell behind it,
+	// proportionally to the original 84px icon / 160px shell ratio, so
+	// resizing doesn't leave a mismatched shell), style picks the glyph.
+	heartIconSize?: number;
+	heartIconStyle?: HeartIconStyle;
+	// Only used when heartIconStyle === "custom" -- any publicly reachable
+	// image URL (e.g. a Supabase Storage public URL from the upload flow
+	// in OBSComponentDialog.tsx). Falls back to the classic heart if unset.
+	customHeartImageUrl?: string | null;
+	calorieIconStyle?: CalorieIconStyle;
 };
 
 export interface HeartrateSample {
@@ -76,16 +113,71 @@ const CURRENT_DISPLAY_CONTENT_GAP = 28;
 const CURRENT_DISPLAY_SECTION_GAP = 26;
 const CURRENT_DISPLAY_HEART_SHELL_SIZE = 160;
 const CURRENT_DISPLAY_HEART_ICON_SIZE = 84;
-const CURRENT_DISPLAY_BPM_FONT_SIZE = 220;
+// Keeps the round shell in proportion to the heart glyph as heartIconSize
+// changes, instead of the shell staying fixed while only the glyph resizes.
+const HEART_SHELL_TO_ICON_RATIO = CURRENT_DISPLAY_HEART_SHELL_SIZE / CURRENT_DISPLAY_HEART_ICON_SIZE;
+const DEFAULT_BPM_FONT_SIZE = 220;
 const CURRENT_DISPLAY_BPM_LABEL_FONT_SIZE = 24;
 const CURRENT_DISPLAY_STATUS_FONT_SIZE = 22;
-const CURRENT_DISPLAY_CALORIES_FONT_SIZE = 24;
-const CURRENT_DISPLAY_CALORIES_ICON_SIZE = 22;
+const DEFAULT_CALORIES_FONT_SIZE = 24;
+const CALORIES_ICON_TO_FONT_RATIO = 22 / 24; // keeps the flame in proportion as the font size changes
 const CURRENT_DISPLAY_GOAL_BAR_WIDTH = 160;
 const CURRENT_DISPLAY_GOAL_BAR_HEIGHT = 6;
 const CURRENT_DISPLAY_GOAL_TEXT_FONT_SIZE = 13;
 const CURRENT_DISPLAY_STATUS_MAX_WIDTH = 680;
 const CURRENT_DISPLAY_BPM_PLACEHOLDER = "888";
+
+// Retro 8-bit-style bitmaps -- 1 = filled pixel, 0 = empty. Rendered as a
+// grid of <rect> with shape-rendering="crispEdges" so scaling stays
+// blocky/pixelated instead of getting smoothed like a normal SVG path
+// would. Chosen to read clearly at small sizes (matches the readability
+// bar of the lucide glyphs they're standing in for).
+const HEART_PIXEL_BITMAP: number[][] = [
+	[0, 1, 1, 0, 0, 1, 1, 0],
+	[1, 1, 1, 1, 1, 1, 1, 1],
+	[1, 1, 1, 1, 1, 1, 1, 1],
+	[1, 1, 1, 1, 1, 1, 1, 1],
+	[0, 1, 1, 1, 1, 1, 1, 0],
+	[0, 0, 1, 1, 1, 1, 0, 0],
+	[0, 0, 0, 1, 1, 0, 0, 0],
+];
+
+const FLAME_PIXEL_BITMAP: number[][] = [
+	[0, 0, 0, 1, 1, 0, 0, 0],
+	[0, 0, 1, 1, 1, 1, 0, 0],
+	[0, 1, 1, 0, 0, 1, 1, 0],
+	[0, 1, 1, 1, 1, 1, 1, 0],
+	[1, 1, 0, 1, 1, 0, 1, 1],
+	[1, 1, 1, 1, 1, 1, 1, 1],
+	[0, 1, 1, 1, 1, 1, 1, 0],
+	[0, 0, 1, 1, 1, 1, 0, 0],
+	[0, 0, 0, 1, 1, 0, 0, 0],
+];
+
+// `size` sets the glyph's width, same meaning as the `height`/`width`
+// style already used for the lucide Heart/Flame icons elsewhere in this
+// file -- height is derived from the bitmap's own aspect ratio so the
+// pixels stay square instead of being stretched.
+function PixelGlyph({ bitmap, size }: { bitmap: number[][]; size: number }) {
+	const cols = bitmap[0]?.length ?? 1;
+	const rows = bitmap.length;
+	const height = Math.round(size * (rows / cols));
+
+	return (
+		<svg
+			width={size}
+			height={height}
+			viewBox={`0 0 ${cols} ${rows}`}
+			shapeRendering="crispEdges"
+			style={{ display: "block" }}
+			aria-hidden
+		>
+			{bitmap.map((row, y) =>
+				row.map((filled, x) => (filled ? <rect key={`${x}-${y}`} x={x} y={y} width={1} height={1} fill="currentColor" /> : null)),
+			)}
+		</svg>
+	);
+}
 
 function buildSmoothedSamples(samples: HeartrateSample[], startTime: number, endTime: number): HeartrateSample[] {
 	if (samples.length === 0) return [];
@@ -209,7 +301,16 @@ export function HeartrateCurrentDisplay({
 	zoneLowColor = DEFAULT_ZONE_LOW_COLOR,
 	zoneMidColor = DEFAULT_ZONE_MID_COLOR,
 	zoneHighColor = DEFAULT_ZONE_HIGH_COLOR,
+	bpmFontSize = DEFAULT_BPM_FONT_SIZE,
+	caloriesFontSize = DEFAULT_CALORIES_FONT_SIZE,
+	heartIconSize = CURRENT_DISPLAY_HEART_ICON_SIZE,
+	heartIconStyle = "classic",
+	customHeartImageUrl = null,
+	calorieIconStyle = "flame",
 }: HeartrateCurrentDisplayProps) {
+	const heartShellSize = Math.round(heartIconSize * HEART_SHELL_TO_ICON_RATIO);
+	const heartImageSrc =
+		heartIconStyle === "custom" ? customHeartImageUrl : heartIconStyle in HEART_IMAGE_PRESETS ? HEART_IMAGE_PRESETS[heartIconStyle as HeartImagePresetKey].src : null;
 	// Zone coloring only overrides the heart icon and the big BPM number --
 	// the "BPM" label and status text underneath stay on textColor, so the
 	// display doesn't lose overall legibility/theme consistency just
@@ -222,6 +323,7 @@ export function HeartrateCurrentDisplay({
 					? zoneMidColor
 					: zoneHighColor
 			: heartColor;
+	const caloriesIconSize = Math.round(caloriesFontSize * CALORIES_ICON_TO_FONT_RATIO);
 	const animationDuration =
 		!heartrate || !animateHeartbeat
 			? undefined
@@ -289,9 +391,13 @@ export function HeartrateCurrentDisplay({
 							<div
 								className="flex shrink-0 items-center justify-center rounded-full"
 								style={{
-									backgroundColor: zoneColorsEnabled ? `${activeHeartColor.replace(/[\d.]+\)$/, "0.12)")}` : heartBackgroundColor,
-									height: CURRENT_DISPLAY_HEART_SHELL_SIZE,
-									width: CURRENT_DISPLAY_HEART_SHELL_SIZE,
+									backgroundColor: heartImageSrc
+										? "transparent"
+										: zoneColorsEnabled
+											? `${activeHeartColor.replace(/[\d.]+\)$/, "0.12)")}`
+											: heartBackgroundColor,
+									height: heartShellSize,
+									width: heartShellSize,
 									transition: zoneColorsEnabled ? "background-color 400ms ease" : undefined,
 								}}
 							>
@@ -303,10 +409,13 @@ export function HeartrateCurrentDisplay({
 										transition: zoneColorsEnabled ? "color 400ms ease" : undefined,
 									}}
 								>
-									<Heart
-										fill="currentColor"
-										style={{ height: CURRENT_DISPLAY_HEART_ICON_SIZE, width: CURRENT_DISPLAY_HEART_ICON_SIZE }}
-									/>
+									{heartImageSrc ? (
+										<img src={heartImageSrc} alt="" style={{ width: heartIconSize, height: "auto", display: "block" }} />
+									) : heartIconStyle === "pixel" ? (
+										<PixelGlyph bitmap={HEART_PIXEL_BITMAP} size={heartIconSize} />
+									) : (
+										<Heart fill="currentColor" style={{ height: heartIconSize, width: heartIconSize }} />
+									)}
 								</div>
 							</div>
 						) : null}
@@ -315,14 +424,14 @@ export function HeartrateCurrentDisplay({
 								<span
 									aria-hidden
 									className="invisible row-start-1 col-start-1 font-semibold leading-none tracking-tight tabular-nums"
-									style={{ fontSize: CURRENT_DISPLAY_BPM_FONT_SIZE }}
+									style={{ fontSize: bpmFontSize }}
 								>
 									{CURRENT_DISPLAY_BPM_PLACEHOLDER}
 								</span>
 								<div
 									className="row-start-1 col-start-1 text-center font-semibold leading-none tracking-tight tabular-nums"
 									style={{
-										fontSize: CURRENT_DISPLAY_BPM_FONT_SIZE,
+										fontSize: bpmFontSize,
 										color: zoneColorsEnabled ? activeHeartColor : textColor,
 										transition: zoneColorsEnabled ? "color 400ms ease" : undefined,
 									}}
@@ -343,11 +452,12 @@ export function HeartrateCurrentDisplay({
 					{showCalories && calories != null && (
 						<div className="flex flex-col items-center gap-1.5">
 							<div className="flex items-center justify-center gap-2" style={{ color: textColor, opacity: 0.8 }}>
-								<Flame
-									fill="currentColor"
-									style={{ height: CURRENT_DISPLAY_CALORIES_ICON_SIZE, width: CURRENT_DISPLAY_CALORIES_ICON_SIZE }}
-								/>
-								<span className="font-semibold tabular-nums" style={{ fontSize: CURRENT_DISPLAY_CALORIES_FONT_SIZE }}>
+								{calorieIconStyle === "pixel" ? (
+									<PixelGlyph bitmap={FLAME_PIXEL_BITMAP} size={caloriesIconSize} />
+								) : (
+									<Flame fill="currentColor" style={{ height: caloriesIconSize, width: caloriesIconSize }} />
+								)}
+								<span className="font-semibold tabular-nums" style={{ fontSize: caloriesFontSize }}>
 									{calories}{calorieGoal != null && calorieGoal > 0 ? ` / ${calorieGoal}` : ""} kcal
 								</span>
 							</div>
