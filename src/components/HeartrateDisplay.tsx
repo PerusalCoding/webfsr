@@ -12,17 +12,23 @@ export type HeartIconStyle = "classic" | "pixel" | HeartImagePresetKey | "custom
 export type CalorieIconStyle = "flame" | "pixel";
 
 // Bundled image assets -- copy the files from the "hearts" output folder
-// into this project's public/hearts/ directory so these paths resolve for
-// both the in-app preview and the standalone OBS browser-source page.
-export const HEART_IMAGE_PRESETS: Record<HeartImagePresetKey, { label: string; src: string }> = {
-	canada: { label: "Canada", src: "/hearts/canada.png" },
-	dragon: { label: "Dragon", src: "/hearts/dragon.png" },
-	halloweenHeart: { label: "Halloween Heart", src: "/hearts/halloween-heart.png" },
-	halloweenBat: { label: "Halloween Bat", src: "/hearts/halloween-bat.png" },
-	flatHeart: { label: "Flat Heart", src: "/hearts/flat-heart.png" },
-	jokr: { label: "Joker", src: "/hearts/jokr.png" },
-	retro: { label: "Retro", src: "/hearts/retro.png" },
-	usa: { label: "USA", src: "/hearts/usa.png" },
+// into this project's public/hearts/ directory. Only the filename is
+// stored here; the base path is supplied by heartImageBaseUrl since it
+// differs by caller: the OBS overlay page (heartrate.tsx) is served over
+// http://127.0.0.1:<port>/, where a root-relative "/hearts/..." path
+// resolves correctly -- but the live preview in OBSComponentDialog.tsx is
+// part of the main app bundle, loaded via file:///.../dist/index.html
+// with a relative Vite base ("./"), where a leading-slash path resolves
+// to the OS filesystem root instead of dist/, and 404s silently.
+export const HEART_IMAGE_PRESETS: Record<HeartImagePresetKey, { label: string; file: string }> = {
+	canada: { label: "Canada", file: "canada.png" },
+	dragon: { label: "Dragon", file: "dragon.png" },
+	halloweenHeart: { label: "Halloween Heart", file: "halloween-heart.png" },
+	halloweenBat: { label: "Halloween Bat", file: "halloween-bat.png" },
+	flatHeart: { label: "Flat Heart", file: "flat-heart.png" },
+	jokr: { label: "Joker", file: "jokr.png" },
+	retro: { label: "Retro", file: "retro.png" },
+	usa: { label: "USA", file: "usa.png" },
 };
 
 type HeartrateCurrentDisplayProps = {
@@ -59,6 +65,13 @@ type HeartrateCurrentDisplayProps = {
 	// image URL (e.g. a Supabase Storage public URL from the upload flow
 	// in OBSComponentDialog.tsx). Falls back to the classic heart if unset.
 	customHeartImageUrl?: string | null;
+	// Base path prepended to each preset's filename (see HEART_IMAGE_PRESETS
+	// above for why this can't be hardcoded into the preset map itself).
+	// Defaults to root-relative, which is correct for heartrate.tsx served
+	// over http://127.0.0.1:<port>/ -- OBSComponentDialog.tsx's live preview
+	// overrides this to a Vite-base-relative path since it's loaded via
+	// file:// instead.
+	heartImageBaseUrl?: string;
 	calorieIconStyle?: CalorieIconStyle;
 };
 
@@ -306,11 +319,16 @@ export function HeartrateCurrentDisplay({
 	heartIconSize = CURRENT_DISPLAY_HEART_ICON_SIZE,
 	heartIconStyle = "classic",
 	customHeartImageUrl = null,
+	heartImageBaseUrl = "/hearts",
 	calorieIconStyle = "flame",
 }: HeartrateCurrentDisplayProps) {
 	const heartShellSize = Math.round(heartIconSize * HEART_SHELL_TO_ICON_RATIO);
 	const heartImageSrc =
-		heartIconStyle === "custom" ? customHeartImageUrl : heartIconStyle in HEART_IMAGE_PRESETS ? HEART_IMAGE_PRESETS[heartIconStyle as HeartImagePresetKey].src : null;
+		heartIconStyle === "custom"
+			? customHeartImageUrl
+			: heartIconStyle in HEART_IMAGE_PRESETS
+				? `${heartImageBaseUrl.replace(/\/$/, "")}/${HEART_IMAGE_PRESETS[heartIconStyle as HeartImagePresetKey].file}`
+				: null;
 	// Zone coloring only overrides the heart icon and the big BPM number --
 	// the "BPM" label and status text underneath stay on textColor, so the
 	// display doesn't lose overall legibility/theme consistency just

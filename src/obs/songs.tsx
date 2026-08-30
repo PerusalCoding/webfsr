@@ -12,7 +12,29 @@ type SongTickerConfig = {
 	fadeMs: number; // enter/leave crossfade duration
 	containerBackgroundColor: string;
 	textColor: string;
+	fontScale: number; // multiplier on all text sizes, 0.5-3
+	bannerScale: number; // multiplier on the banner image size, 0.5-3
 };
+
+// Base (scale=1) pixel sizes for everything that needs to grow with the
+// font/banner sliders. Kept as plain numbers rather than Tailwind
+// arbitrary-value classes (text-[11px] etc.) so they can be multiplied by
+// the live scale and applied as inline styles.
+const BASE_SIZES = {
+	title: 11,
+	artist: 9,
+	badge: 8,
+	gradeLabel: 10,
+	gradeScore: 8,
+	statsLabel: 8,
+	statsValue: 11,
+	rowGap: 8, // px, the flex `gap` between banner/info/grade/stats
+	rowPaddingX: 8,
+	rowPaddingY: 6,
+	borderRadius: 6,
+};
+
+const BASE_BANNER = { width: 56, height: 24 };
 
 type ObsPayload = ObsBroadcastPayload & {
 	eventType?: string;
@@ -26,7 +48,16 @@ const DEFAULT_CONFIG: SongTickerConfig = {
 	fadeMs: 500,
 	containerBackgroundColor: "rgba(0, 0, 0, 0.55)",
 	textColor: "rgba(255, 255, 255, 1)",
+	fontScale: 1,
+	bannerScale: 1,
 };
+
+// Clamp + fall back to a default when the query param is missing or NaN.
+function parseScale(raw: string | null, fallback: number) {
+	const n = Number(raw);
+	if (!raw || Number.isNaN(n)) return fallback;
+	return Math.max(0.5, Math.min(3, n));
+}
 
 function getQueryPassword() {
 	const params = new URLSearchParams(window.location.search);
@@ -43,6 +74,8 @@ function parseQueryConfig(): SongTickerConfig {
 		fadeMs: Math.max(0, Math.min(3000, Number(params.get("fadeMs")) || DEFAULT_CONFIG.fadeMs)),
 		containerBackgroundColor: params.get("containerBgColor") || DEFAULT_CONFIG.containerBackgroundColor,
 		textColor: params.get("textColor") || DEFAULT_CONFIG.textColor,
+		fontScale: parseScale(params.get("fontScale"), DEFAULT_CONFIG.fontScale),
+		bannerScale: parseScale(params.get("bannerScale"), DEFAULT_CONFIG.bannerScale),
 	};
 }
 
@@ -119,10 +152,22 @@ function SongTickerRow({ item, config }: { item: DisplayItem; config: SongTicker
 
 	const transformOffset = status === "leaving" ? "translateY(6px)" : status === "entering" ? "translateY(-10px)" : "translateY(0)";
 
+	// Everything below is sized in px from BASE_SIZES * config.fontScale (or
+	// bannerScale for the banner image) rather than fixed Tailwind classes,
+	// so the sliders in the config page actually change the rendered size.
+	const fs = config.fontScale;
+	const bs = config.bannerScale;
+
 	return (
 		<div
-			className="flex items-center gap-3 rounded-lg overflow-hidden px-3 py-2.5"
+			className="flex items-center overflow-hidden self-start w-fit max-w-full"
 			style={{
+				gap: BASE_SIZES.rowGap * fs,
+				borderRadius: BASE_SIZES.borderRadius * fs,
+				paddingLeft: BASE_SIZES.rowPaddingX * fs,
+				paddingRight: BASE_SIZES.rowPaddingX * fs,
+				paddingTop: BASE_SIZES.rowPaddingY * fs,
+				paddingBottom: BASE_SIZES.rowPaddingY * fs,
 				backgroundColor: config.containerBackgroundColor,
 				color: config.textColor,
 				opacity: status === "visible" ? 1 : 0,
@@ -132,20 +177,35 @@ function SongTickerRow({ item, config }: { item: DisplayItem; config: SongTicker
 		>
 			{config.showBanner &&
 				(song.bannerUrl ? (
-					<img src={song.bannerUrl} alt="" className="w-16 h-[47px] rounded object-cover shrink-0 bg-black/30" />
+					<img
+						src={song.bannerUrl}
+						alt=""
+						className="rounded object-contain shrink-0 bg-black/30"
+						style={{ width: BASE_BANNER.width * bs, height: BASE_BANNER.height * bs }}
+					/>
 				) : (
-					<div className="w-16 h-[47px] rounded shrink-0 bg-black/30" />
+					<div className="rounded shrink-0 bg-black/30" style={{ width: BASE_BANNER.width * bs, height: BASE_BANNER.height * bs }} />
 				))}
 
 			<div className="min-w-0 flex-1">
-				<div className="font-semibold text-sm truncate">{song.title}</div>
-				<div className="text-xs opacity-70 truncate">{song.artist}</div>
-				<div className="flex items-center gap-1.5 mt-1">
-					<span className="inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-red-600 text-white">
+				<div className="font-semibold leading-tight truncate" style={{ fontSize: BASE_SIZES.title * fs }}>
+					{song.title}
+				</div>
+				<div className="opacity-70 leading-tight truncate" style={{ fontSize: BASE_SIZES.artist * fs }}>
+					{song.artist}
+				</div>
+				<div className="flex items-center gap-1 mt-0.5">
+					<span
+						className="inline-block px-1 py-px font-bold rounded bg-red-600 text-white"
+						style={{ fontSize: BASE_SIZES.badge * fs }}
+					>
 						{difficultyBadge(song.style, song.difficultyName, song.difficulty)}
 					</span>
 					{rateLabel && (
-						<span className="inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-violet-600 text-white">
+						<span
+							className="inline-block px-1 py-px font-bold rounded bg-violet-600 text-white"
+							style={{ fontSize: BASE_SIZES.badge * fs }}
+						>
 							{rateLabel}
 						</span>
 					)}
@@ -153,31 +213,46 @@ function SongTickerRow({ item, config }: { item: DisplayItem; config: SongTicker
 			</div>
 
 			{config.showGrade && (
-				<div className="flex flex-col items-center gap-0.5 shrink-0">
-					<span className={`inline-flex items-center justify-center min-w-[2.5rem] px-1.5 py-0.5 rounded font-bold text-xs tabular-nums ${gradeClassName}`}>
+				<div className="flex flex-col items-center gap-px shrink-0">
+					<span
+						className={`inline-flex items-center justify-center px-1 py-px rounded font-bold tabular-nums ${gradeClassName}`}
+						style={{ fontSize: BASE_SIZES.gradeLabel * fs, minWidth: 28 * fs }}
+					>
 						{gradeLabel}
 					</span>
-					{song.score && <span className="text-[10px] opacity-70 tabular-nums">{song.score}%</span>}
+					{song.score && (
+						<span className="opacity-70 tabular-nums" style={{ fontSize: BASE_SIZES.gradeScore * fs }}>
+							{song.score}%
+						</span>
+					)}
 				</div>
 			)}
 
 			{config.showStats && (
-				<div className="flex items-center gap-2.5 text-[10px] shrink-0">
+				<div className="flex items-center shrink-0" style={{ gap: 6 * fs, fontSize: BASE_SIZES.statsLabel * fs }}>
 					<div className="text-center">
 						<div className="opacity-60 uppercase tracking-wide">HR</div>
-						<div className="tabular-nums">{song.avgHr ?? "—"}</div>
+						<div className="tabular-nums" style={{ fontSize: BASE_SIZES.statsValue * fs }}>
+							{song.avgHr ?? "—"}
+						</div>
 					</div>
 					<div className="text-center">
 						<div className="opacity-60 uppercase tracking-wide">Max</div>
-						<div className="tabular-nums">{song.maxHr ?? "—"}</div>
+						<div className="tabular-nums" style={{ fontSize: BASE_SIZES.statsValue * fs }}>
+							{song.maxHr ?? "—"}
+						</div>
 					</div>
 					<div className="text-center">
 						<div className="opacity-60 uppercase tracking-wide">Cal</div>
-						<div className="tabular-nums">{song.calories ?? "—"}</div>
+						<div className="tabular-nums" style={{ fontSize: BASE_SIZES.statsValue * fs }}>
+							{song.calories ?? "—"}
+						</div>
 					</div>
 					<div className="text-center">
 						<div className="opacity-60 uppercase tracking-wide">Time</div>
-						<div className="tabular-nums">{formatDuration(song.durationSeconds)}</div>
+						<div className="tabular-nums" style={{ fontSize: BASE_SIZES.statsValue * fs }}>
+							{formatDuration(song.durationSeconds)}
+						</div>
 					</div>
 				</div>
 			)}
@@ -225,7 +300,7 @@ function SongTickerOBSComponent() {
 	}
 
 	return (
-		<div className="h-screen w-screen overflow-hidden bg-transparent p-2 flex flex-col gap-2 justify-end">
+		<div className="h-screen w-screen overflow-hidden bg-transparent p-1.5 flex flex-col items-start gap-1.5 justify-end">
 			{items.map((item) => (
 				<SongTickerRow key={item.song.startTime} item={item} config={config} />
 			))}

@@ -1201,6 +1201,14 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 						heartIconSize={heartrateConfig.heartIconSize}
 						heartIconStyle={heartrateConfig.heartIconStyle}
 						customHeartImageUrl={heartrateConfig.customHeartImageUrl}
+						// This preview renders inside the main app bundle, loaded via
+						// file:///.../dist/index.html (Vite base "./"), not over an
+						// http:// origin like the actual OBS overlay page -- a
+						// root-relative "/hearts/..." path would 404 against the
+						// filesystem root here, so use import.meta.env.BASE_URL
+						// ("./" in this build) instead, resolving relative to
+						// index.html's own directory (dist/).
+						heartImageBaseUrl={`${import.meta.env.BASE_URL}hearts`}
 						calorieIconStyle={heartrateConfig.calorieIconStyle}
 					/>
 				)}

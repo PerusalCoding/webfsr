@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Song Ticker — Size &amp; Config</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #12151c;
+    --panel-2: #171b24;
+    --border: #262b36;
+    --text: #e7e9ee;
+    --text-dim: #8b90a0;
+    --accent: #ff4d6d;
+    --accent-2: #7c5cff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(circle at 20% -10%, #1a1330 0%, var(--bg) 45%);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 32px 20px 64px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  header { margin-bottom: 24px; }
+  h1 {
+    font-size: 20px;
+    letter-spacing: 0.02em;
+    margin: 0 0 4px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h1 .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 10px 2px var(--accent);
+  }
+  header p { margin: 0; color: var(--text-dim); font-size: 13px; }
+
+  .preview-shell {
+    background:
+      linear-gradient(45deg, #1c1f28 25%, transparent 25%) -8px 0/16px 16px,
+      linear-gradient(-45deg, #1c1f28 25%, transparent 25%) -8px 0/16px 16px,
+      linear-gradient(45deg, transparent 75%, #1c1f28 75%) -8px 0/16px 16px,
+      linear-gradient(-45deg, transparent 75%, #1c1f28 75%) -8px 0/16px 16px,
+      #14161d;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+    margin-bottom: 22px;
+    min-height: 180px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 8px;
+    overflow: hidden;
+  }
+  .preview-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin: 0 0 14px;
+  }
+
+  .row { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+  .row:last-child { margin-bottom: 0; }
+  .row label { flex: 0 0 130px; font-size: 13px; color: var(--text); }
+  .row input[type="range"] { flex: 1; accent-color: var(--accent-2); }
+  .row .val {
+    flex: 0 0 48px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+    color: var(--accent-2);
+    font-weight: 600;
+  }
+  .checks { display: flex; gap: 18px; flex-wrap: wrap; }
+  .checks label {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 13px; color: var(--text);
+    cursor: pointer;
+  }
+  .checks input { accent-color: var(--accent-2); }
+  .colorrow { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .colorrow:last-child { margin-bottom: 0; }
+  .colorrow label { flex: 0 0 130px; font-size: 13px; }
+  .colorrow input[type="color"] {
+    width: 34px; height: 28px; padding: 0; border: 1px solid var(--border);
+    border-radius: 6px; background: none; cursor: pointer;
+  }
+  .colorrow input[type="range"] { flex: 1; accent-color: var(--accent-2); }
+  .colorrow .val { width: 34px; text-align: right; font-size: 12px; color: var(--text-dim); }
+
+  .urlbox {
+    display: flex; gap: 8px; align-items: stretch;
+  }
+  .urlbox input {
+    flex: 1;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 12px;
+    padding: 10px 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .urlbox button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 0 18px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.15s ease;
+  }
+  .urlbox button:hover { filter: brightness(1.1); }
+  .urlbox button.copied { background: #2fbf71; }
+
+  .basebox { display: flex; gap: 8px; margin-bottom: 14px; }
+  .basebox input {
+    flex: 1;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 12px;
+    padding: 10px 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .hint { font-size: 11px; color: var(--text-dim); margin-top: 8px; line-height: 1.5; }
+  .hint code {
+    background: var(--panel-2);
+    padding: 1px 5px;
+    border-radius: 4px;
+    color: var(--accent-2);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span class="dot"></span>Song Ticker — Size &amp; Config</h1>
+    <p>Drag the sliders until it looks right, then copy the URL into an OBS Browser Source.</p>
+  </header>
+
+  <div class="preview-shell">
+    <div class="preview-label">Live preview (sample data, checkered = transparent)</div>
+    <div id="previewRow"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Page URL</h2>
+    <div class="basebox">
+      <input id="baseUrl" type="text" placeholder="https://yoursite.com/obs/songs.html" />
+    </div>
+    <div class="row" style="margin-bottom:0">
+      <label>OBS password</label>
+      <input id="pwd" type="text" placeholder="pwd" style="flex:1;background:var(--panel-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;padding:8px 10px;" />
+    </div>
+    <p class="hint">Paste the URL of your deployed <code>songs_index.html</code> page above. This is the same value you'd normally hand-type into the OBS browser source URL field.</p>
+  </div>
+
+  <div class="panel">
+    <h2>Size</h2>
+    <div class="row">
+      <label>Font size</label>
+      <input id="fontScale" type="range" min="0.5" max="3" step="0.05" value="1" />
+      <span class="val" id="fontScaleVal">1.00x</span>
+    </div>
+    <div class="row">
+      <label>Banner size</label>
+      <input id="bannerScale" type="range" min="0.5" max="3" step="0.05" value="1" />
+      <span class="val" id="bannerScaleVal">1.00x</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Behavior</h2>
+    <div class="row">
+      <label>Rows visible</label>
+      <input id="count" type="range" min="1" max="10" step="1" value="5" />
+      <span class="val" id="countVal">5</span>
+    </div>
+    <div class="row">
+      <label>Fade duration</label>
+      <input id="fadeMs" type="range" min="0" max="3000" step="50" value="500" />
+      <span class="val" id="fadeMsVal">500ms</span>
+    </div>
+    <div class="checks">
+      <label><input id="showBanner" type="checkbox" checked /> Banner</label>
+      <label><input id="showGrade" type="checkbox" checked /> Grade</label>
+      <label><input id="showStats" type="checkbox" checked /> Stats (HR/Cal/Time)</label>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Colors</h2>
+    <div class="colorrow">
+      <label>Background</label>
+      <input id="bgColor" type="color" value="#000000" />
+      <input id="bgAlpha" type="range" min="0" max="1" step="0.05" value="0.55" />
+      <span class="val" id="bgAlphaVal">55%</span>
+    </div>
+    <div class="colorrow">
+      <label>Text</label>
+      <input id="textColor" type="color" value="#ffffff" />
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>OBS Browser Source URL</h2>
+    <div class="urlbox">
+      <input id="finalUrl" type="text" readonly />
+      <button id="copyBtn">Copy</button>
+    </div>
+    <p class="hint">Paste this into OBS as a Browser Source. Width/height in OBS can stay whatever you like — the sliders above already control the actual element sizes, independent of the source's pixel dimensions.</p>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  const sample = {
+    title: "Through the Fire and Flames",
+    artist: "DragonForce",
+    difficulty: "SX 15",
+    rate: "1.2x",
+    grade: "A+",
+    gradeClass: "background:#10b981;color:white;",
+    score: "86.42",
+    avgHr: 168,
+    maxHr: 184,
+    cal: 12,
+    time: "3:47",
+  };
+
+  function hexToRgb(hex) {
+    const m = hex.replace("#", "");
+    return [parseInt(m.slice(0, 2), 16), parseInt(m.slice(2, 4), 16), parseInt(m.slice(4, 6), 16)];
+  }
+
+  function render() {
+    const fontScale = parseFloat($("fontScale").value);
+    const bannerScale = parseFloat($("bannerScale").value);
+    const count = parseInt($("count").value, 10);
+    const fadeMs = parseInt($("fadeMs").value, 10);
+    const showBanner = $("showBanner").checked;
+    const showGrade = $("showGrade").checked;
+    const showStats = $("showStats").checked;
+    const bgHex = $("bgColor").value;
+    const bgAlpha = parseFloat($("bgAlpha").value);
+    const textHex = $("textColor").value;
+
+    $("fontScaleVal").textContent = fontScale.toFixed(2) + "x";
+    $("bannerScaleVal").textContent = bannerScale.toFixed(2) + "x";
+    $("countVal").textContent = count;
+    $("fadeMsVal").textContent = fadeMs + "ms";
+    $("bgAlphaVal").textContent = Math.round(bgAlpha * 100) + "%";
+
+    const [r, g, b] = hexToRgb(bgHex);
+    const bgColor = `rgba(${r}, ${g}, ${b}, ${bgAlpha})`;
+
+    // ---- live preview row ----
+    const bannerW = 56 * bannerScale, bannerH = 24 * bannerScale;
+    const bannerHtml = showBanner
+      ? `<img src="" style="width:${bannerW}px;height:${bannerH}px;border-radius:4px;background:rgba(255,255,255,0.08);flex-shrink:0;" />`
+      : "";
+    const gradeHtml = showGrade
+      ? `<div style="display:flex;flex-direction:column;align-items:center;gap:1px;flex-shrink:0;">
+          <span style="${sample.gradeClass}font-weight:700;border-radius:4px;padding:1px 4px;font-size:${10*fontScale}px;">${sample.grade}</span>
+          <span style="opacity:0.7;font-size:${8*fontScale}px;">${sample.score}%</span>
+        </div>`
+      : "";
+    const statCol = (label, value) => `<div style="text-align:center;"><div style="opacity:0.6;text-transform:uppercase;letter-spacing:0.05em;font-size:${8*fontScale}px;">${label}</div><div style="font-size:${11*fontScale}px;">${value}</div></div>`;
+    const statsHtml = showStats
+      ? `<div style="display:flex;align-items:center;gap:${6*fontScale}px;flex-shrink:0;font-size:${8*fontScale}px;">
+          ${statCol("HR", sample.avgHr)}
+          ${statCol("Max", sample.maxHr)}
+          ${statCol("Cal", sample.cal)}
+          ${statCol("Time", sample.time)}
+        </div>`
+      : "";
+
+    $("previewRow").innerHTML = `
+      <div style="display:flex;align-items:center;gap:${8*fontScale}px;border-radius:${6*fontScale}px;padding:${6*fontScale}px ${8*fontScale}px;background:${bgColor};color:${textHex};width:fit-content;max-width:100%;transition:all .15s ease;">
+        ${bannerHtml}
+        <div style="min-width:0;">
+          <div style="font-weight:600;font-size:${11*fontScale}px;line-height:1.2;white-space:nowrap;">${sample.title}</div>
+          <div style="opacity:0.7;font-size:${9*fontScale}px;line-height:1.2;white-space:nowrap;">${sample.artist}</div>
+          <div style="display:flex;align-items:center;gap:4px;margin-top:2px;">
+            <span style="background:#dc2626;color:white;font-weight:700;border-radius:3px;padding:1px 4px;font-size:${8*fontScale}px;">${sample.difficulty}</span>
+            <span style="background:#7c3aed;color:white;font-weight:700;border-radius:3px;padding:1px 4px;font-size:${8*fontScale}px;">${sample.rate}</span>
+          </div>
+        </div>
+        ${gradeHtml}
+        ${statsHtml}
+      </div>
+    `;
+
+    // ---- build URL ----
+    const base = $("baseUrl").value.trim() || "https://yoursite.com/obs/songs.html";
+    const pwd = $("pwd").value.trim();
+    const params = new URLSearchParams();
+    if (pwd) params.set("pwd", pwd);
+    params.set("count", String(count));
+    params.set("showBanner", String(showBanner));
+    params.set("showGrade", String(showGrade));
+    params.set("showStats", String(showStats));
+    params.set("fadeMs", String(fadeMs));
+    params.set("containerBgColor", bgColor);
+    params.set("textColor", textHex);
+    params.set("fontScale", fontScale.toFixed(2));
+    params.set("bannerScale", bannerScale.toFixed(2));
+
+    const sep = base.includes("?") ? "&" : "?";
+    $("finalUrl").value = base + sep + params.toString();
+  }
+
+  [
+    "fontScale","bannerScale","count","fadeMs",
+    "showBanner","showGrade","showStats",
+    "bgColor","bgAlpha","textColor","baseUrl","pwd",
+  ].forEach((id) => {
+    $(id).addEventListener("input", render);
+  });
+
+  $("copyBtn").addEventListener("click", () => {
+    $("finalUrl").select();
+    navigator.clipboard.writeText($("finalUrl").value).then(() => {
+      $("copyBtn").textContent = "Copied!";
+      $("copyBtn").classList.add("copied");
+      setTimeout(() => {
+        $("copyBtn").textContent = "Copy";
+        $("copyBtn").classList.remove("copied");
+      }, 1200);
+    });
+  });
+
+  render();
+</script>
+</body>
+</html>
