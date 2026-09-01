@@ -67,10 +67,17 @@ type HeartrateCurrentDisplayProps = {
 	customHeartImageUrl?: string | null;
 	// Base path prepended to each preset's filename (see HEART_IMAGE_PRESETS
 	// above for why this can't be hardcoded into the preset map itself).
-	// Defaults to root-relative, which is correct for heartrate.tsx served
-	// over http://127.0.0.1:<port>/ -- OBSComponentDialog.tsx's live preview
-	// overrides this to a Vite-base-relative path since it's loaded via
-	// file:// instead.
+	// Defaults to "../../hearts" -- a relative path, not absolute -- since
+	// heartrate.tsx (obs/heartrate/index.html) is served in two different
+	// contexts that need the same two-levels-up relative path to reach
+	// hearts/ correctly: a plain static web host serving the real on-disk
+	// nesting (obs/heartrate/ -> up 2 -> hearts/), and Electron's local
+	// server, which flattens everything to look like it's served from
+	// /heartrate/ directly -- browsers clamp excess "../" at the root
+	// rather than erroring, so the same "../../hearts" still lands on
+	// /hearts/ there too. OBSComponentDialog.tsx's live preview overrides
+	// this to a Vite-base-relative path instead, since it's loaded via
+	// file:// as part of the main app bundle, not either of the above.
 	heartImageBaseUrl?: string;
 	calorieIconStyle?: CalorieIconStyle;
 };
@@ -319,7 +326,7 @@ export function HeartrateCurrentDisplay({
 	heartIconSize = CURRENT_DISPLAY_HEART_ICON_SIZE,
 	heartIconStyle = "classic",
 	customHeartImageUrl = null,
-	heartImageBaseUrl = "/hearts",
+	heartImageBaseUrl = "../../hearts",
 	calorieIconStyle = "flame",
 }: HeartrateCurrentDisplayProps) {
 	const heartShellSize = Math.round(heartIconSize * HEART_SHELL_TO_ICON_RATIO);
