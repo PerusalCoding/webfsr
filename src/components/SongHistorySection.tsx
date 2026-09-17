@@ -24,6 +24,12 @@ interface SongHistorySectionProps {
 	hrSamples: HeartrateSample[];
 	folder: string | null;
 	installFolder: string | null;
+	// Extra Songs/ folders (e.g. other drives) also searched for banners,
+	// on top of installFolder above -- from useSongHistory()'s
+	// bannerFolders/addBannerFolder/removeBannerFolder.
+	bannerFolders: string[];
+	addBannerFolder: () => void;
+	removeBannerFolder: (folder: string) => void;
 	mediaBaseUrl: string | null;
 	isSupported: boolean;
 	selectFolder: () => void;
@@ -203,6 +209,9 @@ export function SongHistorySection({
 	hrSamples,
 	folder,
 	installFolder,
+	bannerFolders,
+	addBannerFolder,
+	removeBannerFolder,
 	mediaBaseUrl,
 	isSupported,
 	selectFolder,
@@ -312,6 +321,45 @@ export function SongHistorySection({
 					>
 						{installFolder ? "Change" : "Select folder"}
 					</button>
+				</div>
+
+				<div className="flex flex-col gap-2 pl-3 border-l-2 border-gray-200 dark:border-neutral-700">
+					<div className="flex items-center justify-between gap-2">
+						<div className="text-sm">
+							<div className="font-medium">Additional banner folders</div>
+							<div className="text-xs text-gray-600 dark:text-gray-400">
+								If your songs are spread across more than one drive/location (like ITGMania's own
+								"Additional Song Folders"), add each one here so banners from any of them can be
+								found.
+							</div>
+						</div>
+						<button
+							onClick={addBannerFolder}
+							className="px-3 py-1.5 text-sm rounded border hover:bg-gray-100 dark:hover:bg-neutral-800 shrink-0"
+						>
+							+ Add folder
+						</button>
+					</div>
+
+					{bannerFolders.length > 0 && (
+						<ul className="flex flex-col gap-1">
+							{bannerFolders.map((f) => (
+								<li
+									key={f}
+									className="flex items-center justify-between gap-2 text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-neutral-800 rounded px-2 py-1"
+								>
+									<span className="truncate">{f}</span>
+									<button
+										onClick={() => removeBannerFolder(f)}
+										className="text-gray-500 hover:text-red-600 dark:hover:text-red-400 shrink-0"
+										title="Remove this folder"
+									>
+										×
+									</button>
+								</li>
+							))}
+						</ul>
+					)}
 				</div>
 
 				<div className="flex flex-col gap-1 text-sm">

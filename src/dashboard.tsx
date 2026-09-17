@@ -139,6 +139,30 @@ const MOCK_SENSOR_VALUES = [280, 620, 445, 780, 390, 540];
 const MOCK_THRESHOLDS = [480, 550, 420, 600, 510, 470];
 const MOCK_SENSOR_LABELS = Array.from({ length: MOCK_SENSOR_COUNT }, (_, i) => `Sensor ${i + 1}`);
 
+// Small sparks that drift upward past the sidebar logo, layered on top of
+// the aura glow/orbit blobs. Colors alternate between the active theme's
+// rgb(var(--primary)) and rgb(var(--accent)) (resolved at render time, not
+// baked in here) so they always match whichever palette is active. Kept as
+// a static, deterministic list (no Math.random) so the layout doesn't
+// shift between renders -- left position, size, duration, and delay are
+// all varied by hand for an organic, non-mechanical rise.
+const AURA_PARTICLES: { left: string; size: number; duration: number; delay: number; color: "primary" | "accent" }[] = [
+	{ left: "4%",  size: 3, duration: 3.2, delay: 0,    color: "primary" },
+	{ left: "13%", size: 2, duration: 3.7, delay: 1.9,  color: "accent"  },
+	{ left: "20%", size: 2, duration: 3.8, delay: 0.5,  color: "accent"  },
+	{ left: "28%", size: 3, duration: 3.5, delay: 2.3,  color: "primary" },
+	{ left: "35%", size: 3, duration: 3.4, delay: 1.1,  color: "primary" },
+	{ left: "43%", size: 2, duration: 4.1, delay: 2.7,  color: "accent"  },
+	{ left: "50%", size: 2, duration: 4.0, delay: 0.2,  color: "accent"  },
+	{ left: "58%", size: 3, duration: 3.3, delay: 1.7,  color: "primary" },
+	{ left: "65%", size: 3, duration: 3.6, delay: 1.6,  color: "primary" },
+	{ left: "72%", size: 2, duration: 3.9, delay: 0.4,  color: "accent"  },
+	{ left: "80%", size: 2, duration: 3.3, delay: 0.8,  color: "accent"  },
+	{ left: "87%", size: 3, duration: 3.7, delay: 2.1,  color: "primary" },
+	{ left: "94%", size: 3, duration: 3.9, delay: 1.3,  color: "primary" },
+	{ left: "99%", size: 2, duration: 3.5, delay: 2.5,  color: "accent"  },
+];
+
 function generateMockTimeSeriesData(timeWindow: number): Array<Array<{ value: number; timestamp: number }>> {
 	const now = Date.now();
 	const pointCount = 120;
@@ -2364,22 +2388,32 @@ const Dashboard = () => {
 	// same gold armor accent as Animus, swapping the teal for a ruby red.
 	const LS_ANIMUS_KEY = "webfsr_animus_theme";
 	const LS_RUBY_KEY = "webfsr_ruby_theme";
+	const LS_PURPLE_KEY = "webfsr_purple_theme";
+	const LS_BLUE_KEY = "webfsr_blue_theme";
 	const [animusTheme, setAnimusTheme] = useState<boolean>(() => {
 		try { return localStorage.getItem(LS_ANIMUS_KEY) === "true"; } catch { return false; }
 	});
 	const [rubyTheme, setRubyTheme] = useState<boolean>(() => {
 		try { return localStorage.getItem(LS_RUBY_KEY) === "true"; } catch { return false; }
 	});
+	const [purpleTheme, setPurpleTheme] = useState<boolean>(() => {
+		try { return localStorage.getItem(LS_PURPLE_KEY) === "true"; } catch { return false; }
+	});
+	const [blueTheme, setBlueTheme] = useState<boolean>(() => {
+		try { return localStorage.getItem(LS_BLUE_KEY) === "true"; } catch { return false; }
+	});
 
-	// Keep underlying dark mode in sync with animus/ruby state
+	// Keep underlying dark mode in sync with animus/ruby/purple/blue state
 	useEffect(() => {
-		if (animusTheme || rubyTheme) setTheme("dark");
-	}, [animusTheme, rubyTheme]);
+		if (animusTheme || rubyTheme || purpleTheme || blueTheme) setTheme("dark");
+	}, [animusTheme, rubyTheme, purpleTheme, blueTheme]);
 
+	// Six-way theme cycle: light → dark → animus → ruby → purple → blue → light
 	const toggleTheme = useStableCallback(() => {
-		if (resolvedTheme === "light" && !animusTheme && !rubyTheme) {
+		const noSpecialTheme = !animusTheme && !rubyTheme && !purpleTheme && !blueTheme;
+		if (resolvedTheme === "light" && noSpecialTheme) {
 			setTheme("dark");
-		} else if (resolvedTheme === "dark" && !animusTheme && !rubyTheme) {
+		} else if (resolvedTheme === "dark" && noSpecialTheme) {
 			setAnimusTheme(true);
 			try { localStorage.setItem(LS_ANIMUS_KEY, "true"); } catch {}
 		} else if (animusTheme) {
@@ -2388,13 +2422,95 @@ const Dashboard = () => {
 			try { localStorage.setItem(LS_ANIMUS_KEY, "false"); } catch {}
 			setRubyTheme(true);
 			try { localStorage.setItem(LS_RUBY_KEY, "true"); } catch {}
-		} else {
-			// ruby → back to light
+		} else if (rubyTheme) {
+			// ruby → purple
 			setRubyTheme(false);
 			try { localStorage.setItem(LS_RUBY_KEY, "false"); } catch {}
+			setPurpleTheme(true);
+			try { localStorage.setItem(LS_PURPLE_KEY, "true"); } catch {}
+		} else if (purpleTheme) {
+			// purple → blue
+			setPurpleTheme(false);
+			try { localStorage.setItem(LS_PURPLE_KEY, "false"); } catch {}
+			setBlueTheme(true);
+			try { localStorage.setItem(LS_BLUE_KEY, "true"); } catch {}
+		} else {
+			// blue → back to light
+			setBlueTheme(false);
+			try { localStorage.setItem(LS_BLUE_KEY, "false"); } catch {}
 			setTheme("light");
 		}
 	});
+
+	// Logo branding gradients per theme -- teal/gold is the default brand
+	// look (used for plain Light/Dark AND Animus mode, same as before),
+	// with Ruby/Purple/Blue each swapping in their own palette. Kept as
+	// a lookup rather than nested ternaries now that there are 4 skins.
+	const LOGO_GRADIENTS = {
+		default: {
+			awakened: "linear-gradient(135deg, #C9A227 0%, #F0CC55 40%, #00E5CC 75%, #00BFAA 100%)",
+			animus: "linear-gradient(135deg, #C9A227 0%, #E8B830 35%, #00E5CC 70%, #00BFAA 100%)",
+			textShadow: "0 0 6px rgba(0,229,204,0.35)",
+		},
+		ruby: {
+			awakened: "linear-gradient(135deg, #4A0404 0%, #B91C1C 40%, #EF4444 75%, #FF6B6B 100%)",
+			animus: "linear-gradient(135deg, #7A0C1E 0%, #E6394F 35%, #FF4D4D 70%, #FF8A5B 100%)",
+			textShadow: "0 0 8px rgba(255,59,59,0.6), 0 0 20px rgba(200,20,40,0.4)",
+		},
+		purple: {
+			awakened: "linear-gradient(135deg, #3B0764 0%, #7C3AED 40%, #C084FC 75%, #E9D5FF 100%)",
+			animus: "linear-gradient(135deg, #581C87 0%, #9333EA 35%, #C084FC 70%, #F0ABFC 100%)",
+			textShadow: "0 0 8px rgba(168,85,247,0.6), 0 0 20px rgba(126,34,206,0.4)",
+		},
+		blue: {
+			awakened: "linear-gradient(135deg, #082F49 0%, #2563EB 40%, #60A5FA 75%, #BAE6FD 100%)",
+			animus: "linear-gradient(135deg, #1E3A8A 0%, #2563EB 35%, #38BDF8 70%, #7DD3FC 100%)",
+			textShadow: "0 0 8px rgba(56,189,248,0.6), 0 0 20px rgba(37,99,235,0.4)",
+		},
+	} as const;
+	const activeLogoGradient = purpleTheme
+		? LOGO_GRADIENTS.purple
+		: blueTheme
+			? LOGO_GRADIENTS.blue
+			: rubyTheme
+				? LOGO_GRADIENTS.ruby
+				: LOGO_GRADIENTS.default;
+
+	// Injects the orbiting/pulsing aura glow behind the sidebar logo, once
+	// per document (same pattern as the heartbeat keyframes above). The
+	// blobs are colored via `rgb(var(--primary))`/`rgb(var(--accent))`
+	// rather than hardcoded colors, so the aura automatically follows
+	// whichever theme (Light/Dark/Animus/Ruby/Purple/Blue) is active.
+	useEffect(() => {
+		if (!document.getElementById("aura-animation")) {
+			const style = document.createElement("style");
+			style.id = "aura-animation";
+			style.innerHTML = `
+				@keyframes aura-orbit {
+					from { transform: rotate(0deg); }
+					to { transform: rotate(360deg); }
+				}
+				@keyframes aura-orbit-reverse {
+					from { transform: rotate(360deg); }
+					to { transform: rotate(0deg); }
+				}
+				@keyframes aura-pulse {
+					0%, 100% { opacity: 0.3; transform: scale(1); }
+					50% { opacity: 0.55; transform: scale(1.1); }
+				}
+				@keyframes particle-rise {
+					0% { transform: translate(0, 0) scale(0.5); opacity: 0; }
+					15% { opacity: 1; }
+					50% { transform: translate(4px, -26px) scale(1); }
+					85% { opacity: 0.6; }
+					100% { transform: translate(-3px, -52px) scale(0.7); opacity: 0; }
+				}
+			`;
+			document.head.appendChild(style);
+		}
+	}, []);
+
+
 
 	const [thresholds, setThresholds] = useState<number[]>([]);
 	const [sensorLabels, setSensorLabels] = useState<string[]>([]);
@@ -3095,7 +3211,7 @@ const Dashboard = () => {
 						onDragEnd={sensorBarsDrag.handleDragEnd}
 					/>
 				</div>
-				<div className="relative flex-1 min-h-0 overflow-hidden">
+				<div className="relative flex-1 min-h-0">
 					<SensorBar
 						key={`sensor-${index}`}
 						value={latestData?.values[index] || 0}
@@ -3196,7 +3312,7 @@ const Dashboard = () => {
 	}
 
 	return (
-		<main className={`grid grid-cols-[17rem_1fr] h-screen w-screen bg-background text-foreground overflow-hidden${animusTheme ? " theme-animus" : ""}${rubyTheme ? " theme-ruby" : ""}`}>
+		<main className={`grid grid-cols-[17rem_1fr] h-screen w-screen bg-background text-foreground overflow-hidden${animusTheme ? " theme-animus" : ""}${rubyTheme ? " theme-ruby" : ""}${purpleTheme ? " theme-purple" : ""}${blueTheme ? " theme-blue" : ""}`}>
 		<UpdateModal animusTheme={animusTheme} rubyTheme={rubyTheme} />
 		{animusTheme && (
 			<style>{`
@@ -3388,6 +3504,196 @@ const Dashboard = () => {
 				}
 			`}</style>
 		)}
+		{purpleTheme && (
+			<style>{`
+				.theme-purple {
+					/* Deep violet-black base */
+					--background:        16 8 20;
+					--foreground:        230 220 255;
+					--card:              24 12 30;
+					--card-foreground:   230 220 255;
+					--popover:           20 10 26;
+					--popover-foreground:230 220 255;
+
+					/* Vivid violet primary */
+					--primary:           147 51 234;
+					--primary-foreground:250 245 255;
+
+					/* Plum secondary */
+					--secondary:         45 12 60;
+					--secondary-foreground:216 180 254;
+
+					/* Muted — slightly brighter than bg so panels read */
+					--muted:             30 15 38;
+					--muted-foreground:  180 150 210;
+
+					/* Magenta accent */
+					--accent:            40 10 55;
+					--accent-foreground: 216 180 254;
+
+					/* Border — warm violet tint */
+					--border:            70 40 90;
+					--input:             26 13 34;
+					--ring:              147 51 234;
+
+					/* Destructive stays red */
+					--destructive:       220 50 50;
+					--destructive-foreground:255 255 255;
+
+					--radius: 0.5rem;
+				}
+
+				/* Sidebar */
+				.theme-purple .border-r {
+					background: rgb(12 6 16) !important;
+					border-color: rgb(70 40 90) !important;
+				}
+
+				/* Panels / cards */
+				.theme-purple .bg-white,
+				.theme-purple .dark\\:bg-neutral-900,
+				.theme-purple .dark\\:bg-neutral-950 {
+					background-color: rgb(24 12 30) !important;
+				}
+
+				/* Borders */
+				.theme-purple .border,
+				.theme-purple .border-border {
+					border-color: rgb(70 40 90) !important;
+				}
+
+				/* Violet glow on focused inputs */
+				.theme-purple input:focus,
+				.theme-purple select:focus {
+					outline: none;
+					box-shadow: 0 0 0 2px rgba(168,85,247,0.45);
+				}
+
+				/* Tab active underline — violet */
+				.theme-purple .border-foreground {
+					border-color: #A855F7 !important;
+					color: #A855F7 !important;
+				}
+
+				/* Scrollbar */
+				.theme-purple ::-webkit-scrollbar-track { background: rgb(16 8 20); }
+				.theme-purple ::-webkit-scrollbar-thumb { background: rgb(70 40 90); border-radius: 4px; }
+				.theme-purple ::-webkit-scrollbar-thumb:hover { background: #A855F7; }
+
+				/* Sensor bars base bg */
+				.theme-purple .bg-muted { background-color: rgb(30 15 38) !important; }
+
+				/* Button primary style override — vivid violet */
+				.theme-purple button[class*="bg-primary"],
+				.theme-purple [class*="bg-primary"] {
+					background-color: #9333EA !important;
+					color: rgb(250 245 255) !important;
+				}
+
+				/* Subtle circuit-board background pattern on the main content area */
+				.theme-purple > div:last-child {
+					background-image:
+						linear-gradient(rgba(168,85,247,0.04) 1px, transparent 1px),
+						linear-gradient(90deg, rgba(168,85,247,0.04) 1px, transparent 1px);
+					background-size: 32px 32px;
+				}
+			`}</style>
+		)}
+		{blueTheme && (
+			<style>{`
+				.theme-blue {
+					/* Deep navy-black base */
+					--background:        6 12 24;
+					--foreground:        220 235 255;
+					--card:              10 20 34;
+					--card-foreground:   220 235 255;
+					--popover:           8 16 28;
+					--popover-foreground:220 235 255;
+
+					/* Vivid electric-blue primary */
+					--primary:           37 99 235;
+					--primary-foreground:240 247 255;
+
+					/* Navy secondary */
+					--secondary:         10 40 70;
+					--secondary-foreground:147 197 253;
+
+					/* Muted — slightly brighter than bg so panels read */
+					--muted:             14 28 46;
+					--muted-foreground:  140 175 210;
+
+					/* Cyan accent */
+					--accent:            8 40 55;
+					--accent-foreground: 34 211 238;
+
+					/* Border — cool blue tint */
+					--border:            35 65 95;
+					--input:             12 26 42;
+					--ring:              37 99 235;
+
+					/* Destructive shifted toward orange so it still reads against a blue theme */
+					--destructive:       255 90 60;
+					--destructive-foreground:8 12 24;
+
+					--radius: 0.5rem;
+				}
+
+				/* Sidebar */
+				.theme-blue .border-r {
+					background: rgb(4 9 18) !important;
+					border-color: rgb(35 65 95) !important;
+				}
+
+				/* Panels / cards */
+				.theme-blue .bg-white,
+				.theme-blue .dark\\:bg-neutral-900,
+				.theme-blue .dark\\:bg-neutral-950 {
+					background-color: rgb(10 20 34) !important;
+				}
+
+				/* Borders */
+				.theme-blue .border,
+				.theme-blue .border-border {
+					border-color: rgb(35 65 95) !important;
+				}
+
+				/* Blue glow on focused inputs */
+				.theme-blue input:focus,
+				.theme-blue select:focus {
+					outline: none;
+					box-shadow: 0 0 0 2px rgba(59,130,246,0.45);
+				}
+
+				/* Tab active underline — blue */
+				.theme-blue .border-foreground {
+					border-color: #3B82F6 !important;
+					color: #3B82F6 !important;
+				}
+
+				/* Scrollbar */
+				.theme-blue ::-webkit-scrollbar-track { background: rgb(6 12 24); }
+				.theme-blue ::-webkit-scrollbar-thumb { background: rgb(35 65 95); border-radius: 4px; }
+				.theme-blue ::-webkit-scrollbar-thumb:hover { background: #3B82F6; }
+
+				/* Sensor bars base bg */
+				.theme-blue .bg-muted { background-color: rgb(14 28 46) !important; }
+
+				/* Button primary style override — electric blue */
+				.theme-blue button[class*="bg-primary"],
+				.theme-blue [class*="bg-primary"] {
+					background-color: #2563EB !important;
+					color: rgb(240 247 255) !important;
+				}
+
+				/* Subtle circuit-board background pattern on the main content area */
+				.theme-blue > div:last-child {
+					background-image:
+						linear-gradient(rgba(59,130,246,0.04) 1px, transparent 1px),
+						linear-gradient(90deg, rgba(59,130,246,0.04) 1px, transparent 1px);
+					background-size: 32px 32px;
+				}
+			`}</style>
+		)}
 			{/* Sidebar */}
 			<div className="border-r border-border bg-gray-100 dark:bg-neutral-950 overflow-hidden">
 				<div className="h-full w-full grid grid-rows-[auto_1fr]">
@@ -3418,11 +3724,60 @@ const Dashboard = () => {
 						) : (
 							<div className="size-8 shrink-0" />
 						)}
-						<h2 className="text-xl font-bold flex-1 text-center leading-tight select-none" style={{ lineHeight: 1.15 }}>
+						<h2 className="relative text-xl font-bold flex-1 text-center leading-tight select-none" style={{ lineHeight: 1.15 }}>
+							{/* Animated aura -- a soft breathing halo plus two blurred
+							    color blobs that visibly orbit the logo at different
+							    speeds/directions, so the aura actually appears to move
+							    rather than just glow in place. Colored from
+							    rgb(var(--primary))/rgb(var(--accent)) so it automatically
+							    follows whichever theme (Light/Dark/Animus/Ruby/Purple/
+							    Blue) is currently active, with no extra per-theme wiring. */}
+							<div aria-hidden="true" className="absolute inset-0 pointer-events-none overflow-visible">
+								{/* Soft central glow, slowly breathing in size/opacity */}
+								<div
+									className="absolute inset-0 rounded-2xl blur-2xl"
+									style={{
+										background: "linear-gradient(90deg, rgb(var(--primary)), rgb(var(--accent)))",
+										opacity: 0.28,
+										animation: "aura-pulse 3s ease-in-out infinite",
+									}}
+								/>
+								{/* Primary-colored blob orbiting one way */}
+								<div className="absolute inset-0" style={{ animation: "aura-orbit 6s linear infinite" }}>
+									<div
+										className="absolute top-1/2 left-1/2 rounded-full blur-xl"
+										style={{ width: 38, height: 38, marginLeft: -19, marginTop: -32, background: "rgb(var(--primary))", opacity: 0.55 }}
+									/>
+								</div>
+								{/* Accent-colored blob orbiting the other way, at a different speed */}
+								<div className="absolute inset-0" style={{ animation: "aura-orbit-reverse 4.5s linear infinite" }}>
+									<div
+										className="absolute top-1/2 left-1/2 rounded-full blur-xl"
+										style={{ width: 32, height: 32, marginLeft: 20, marginTop: 24, background: "rgb(var(--accent))", opacity: 0.5 }}
+									/>
+								</div>
+								{/* Small sparks drifting upward past the logo, matching the
+								    aura's own colors -- see AURA_PARTICLES for the per-spark
+								    timing/position config. */}
+								{AURA_PARTICLES.map((p, i) => (
+									<div
+										key={i}
+										className="absolute bottom-0 rounded-full"
+										style={{
+											left: p.left,
+											width: p.size,
+											height: p.size,
+											background: `rgb(var(--${p.color}))`,
+											boxShadow: `0 0 4px rgb(var(--${p.color}))`,
+											opacity: 0,
+											animation: `particle-rise ${p.duration}s ease-in infinite`,
+											animationDelay: `${p.delay}s`,
+										}}
+									/>
+								))}
+							</div>
 							<span style={{
-								backgroundImage: rubyTheme
-									? "linear-gradient(135deg, #4A0404 0%, #B91C1C 40%, #EF4444 75%, #FF6B6B 100%)"
-									: "linear-gradient(135deg, #C9A227 0%, #F0CC55 40%, #00E5CC 75%, #00BFAA 100%)",
+								backgroundImage: activeLogoGradient.awakened,
 								WebkitBackgroundClip: "text",
 								WebkitTextFillColor: "transparent",
 								backgroundClip: "text",
@@ -3435,9 +3790,7 @@ const Dashboard = () => {
 								opacity: 0.85,
 							}}>Awakened</span>
 							<span style={{
-								backgroundImage: rubyTheme
-									? "linear-gradient(135deg, #7A0C1E 0%, #E6394F 35%, #FF4D4D 70%, #FF8A5B 100%)"
-									: "linear-gradient(135deg, #C9A227 0%, #E8B830 35%, #00E5CC 70%, #00BFAA 100%)",
+								backgroundImage: activeLogoGradient.animus,
 								WebkitBackgroundClip: "text",
 								WebkitTextFillColor: "transparent",
 								backgroundClip: "text",
@@ -3447,9 +3800,7 @@ const Dashboard = () => {
 								display: "block",
 								fontSize: "1.15rem",
 								textTransform: "uppercase",
-								textShadow: rubyTheme
-									? "0 0 8px rgba(255,59,59,0.6), 0 0 20px rgba(200,20,40,0.4)"
-									: "0 0 6px rgba(0,229,204,0.35)",
+								textShadow: activeLogoGradient.textShadow,
 							}}>Animus</span>
 						</h2>
 						<Button
@@ -3457,8 +3808,22 @@ const Dashboard = () => {
 							size="icon"
 							className="size-8 shrink-0"
 							onClick={toggleTheme}
-							aria-label={animusTheme ? "Switch to Ruby mode" : rubyTheme ? "Switch to Light mode" : resolvedTheme === "dark" ? "Switch to Animus mode" : "Switch to Dark mode"}
-							title={animusTheme ? "Animus theme — click for Ruby" : rubyTheme ? "Ruby theme — click for Light" : resolvedTheme === "dark" ? "Dark theme — click for Animus" : "Light theme — click for Dark"}
+							aria-label={
+								animusTheme ? "Switch to Ruby mode"
+								: rubyTheme ? "Switch to Purple mode"
+								: purpleTheme ? "Switch to Blue mode"
+								: blueTheme ? "Switch to Light mode"
+								: resolvedTheme === "dark" ? "Switch to Animus mode"
+								: "Switch to Dark mode"
+							}
+							title={
+								animusTheme ? "Animus theme — click for Ruby"
+								: rubyTheme ? "Ruby theme — click for Purple"
+								: purpleTheme ? "Purple theme — click for Blue"
+								: blueTheme ? "Blue theme — click for Light"
+								: resolvedTheme === "dark" ? "Dark theme — click for Animus"
+								: "Light theme — click for Dark"
+							}
 						>
 							{animusTheme ? (
 								/* Animus icon: a small crystal/gem shape in teal+gold */
@@ -3473,6 +3838,20 @@ const Dashboard = () => {
 									<polygon points="12,2 20,8 17,20 7,20 4,8" fill="rgba(220,38,38,0.22)" stroke="#FF5F5F" strokeWidth={1.5}/>
 									<polygon points="12,5 17,9 15,18 9,18 7,9" fill="rgba(230,57,79,0.45)" stroke="rgba(255,107,107,0.9)" strokeWidth={1}/>
 									<line x1="12" y1="2" x2="12" y2="22" stroke="rgba(255,107,107,0.55)" strokeWidth={0.8}/>
+								</svg>
+							) : purpleTheme ? (
+								/* Purple icon: same crystal/gem shape in a violet/lavender two-tone */
+								<svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
+									<polygon points="12,2 20,8 17,20 7,20 4,8" fill="rgba(147,51,234,0.22)" stroke="#C084FC" strokeWidth={1.5}/>
+									<polygon points="12,5 17,9 15,18 9,18 7,9" fill="rgba(216,180,254,0.45)" stroke="rgba(216,180,254,0.9)" strokeWidth={1}/>
+									<line x1="12" y1="2" x2="12" y2="22" stroke="rgba(216,180,254,0.55)" strokeWidth={0.8}/>
+								</svg>
+							) : blueTheme ? (
+								/* Blue icon: same crystal/gem shape in an electric blue/cyan two-tone */
+								<svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
+									<polygon points="12,2 20,8 17,20 7,20 4,8" fill="rgba(37,99,235,0.22)" stroke="#60A5FA" strokeWidth={1.5}/>
+									<polygon points="12,5 17,9 15,18 9,18 7,9" fill="rgba(34,211,238,0.45)" stroke="rgba(96,165,250,0.9)" strokeWidth={1}/>
+									<line x1="12" y1="2" x2="12" y2="22" stroke="rgba(96,165,250,0.55)" strokeWidth={0.8}/>
 								</svg>
 							) : resolvedTheme === "dark" ? (
 								<Sun className="size-4" />
@@ -3781,6 +4160,9 @@ const Dashboard = () => {
 								hrSamples={songHistory.hrSamples}
 								folder={songHistory.folder}
 								installFolder={songHistory.installFolder}
+								bannerFolders={songHistory.bannerFolders}
+								addBannerFolder={songHistory.addBannerFolder}
+								removeBannerFolder={songHistory.removeBannerFolder}
 								mediaBaseUrl={songHistory.mediaBaseUrl}
 								isSupported={songHistory.isSupported}
 								selectFolder={songHistory.selectFolder}
@@ -3994,7 +4376,13 @@ const Dashboard = () => {
 				</div>
 			</div>
 
-			<OBSComponentDialog open={obsComponentDialogOpen} onOpenChange={setObsComponentDialogOpen} password={obsPassword} />
+			<OBSComponentDialog
+	open={obsComponentDialogOpen}
+	onOpenChange={setObsComponentDialogOpen}
+	password={obsPassword}
+	liveValues={latestData?.values}
+	liveThresholds={thresholds}
+/>
 
 			<AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
 

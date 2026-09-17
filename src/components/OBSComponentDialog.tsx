@@ -22,6 +22,7 @@ import {
 	type HeartrateHistoryAxisSide,
 	type HeartrateSample,
 } from "./HeartrateDisplay";
+import { DEFAULT_PANEL_RECTS, PadPanelsOverlay, type Direction, type PadSensor, type PanelRect } from "./PadPanels";
 import SensorBar, { maxSensorVal } from "./SensorBar";
 import TimeSeriesGraph from "./TimeSeriesGraph";
 
@@ -31,9 +32,19 @@ export type OBSComponentDialogProps = {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	password?: string;
+	// Live FSR readings from the same source Dashboard.tsx already feeds
+	// into broadcastToOBS() -- passing them in lets the Pad Preview react
+	// to real presses on your pad instead of only the animated mock data,
+	// so you can verify your panel calibration and sensor labels before
+	// copying the URL into OBS. Both optional and independent of each
+	// other: if either is missing/empty (pad not connected, or this
+	// dialog used somewhere without access to live data), the preview
+	// quietly falls back to the existing mock animation.
+	liveValues?: number[];
+	liveThresholds?: number[];
 };
 
-type ComponentType = "graph" | "sensors" | "heartrate" | "songs";
+type ComponentType = "graph" | "sensors" | "heartrate" | "songs" | "pad";
 
 // Mirrors HeartIconStyle from HeartrateDisplay.tsx -- kept as a runtime
 // Set (rather than importing a type) so an unrecognized/garbled query
@@ -132,9 +143,34 @@ interface SongTickerConfig {
 	fadeMs: number; // enter/leave crossfade duration
 	containerBackgroundColor: string;
 	textColor: string;
+	fontScale: number; // multiplier on all text sizes, 0.5-3
+	bannerScale: number; // multiplier on the banner image size, 0.5-3
+	sessionReset: boolean; // hide songs from before this ticker connected (default true)
 }
 
-type ComponentConfig = GraphConfig | SensorsConfig | HeartrateConfig | SongTickerConfig;
+// Live "pad" overlay -- see obs/pad.tsx and components/PadPanels.tsx. Unlike
+// the other components, this one needs no live-value config here at all:
+// the overlay page computes active/inactive itself from the same
+// {values, thresholds} broadcast every other component already receives.
+// Everything below is purely cosmetic (which image, which colors/labels,
+// how idle vs. active panels look).
+interface PadConfig {
+	padImageUrl: string | null; // null => bundled default pad-background.png
+	sensorColors: string[];
+	sensorLabels: string[];
+	idleOpacity: number; // 0-1, panel tint opacity while NOT triggered
+	activeOpacity: number; // 0-1, panel tint opacity while triggered
+	glowEnabled: boolean; // inset glow on active panels
+	containerBackgroundColor: string;
+	// Per-direction position/size overrides (percent of the image box),
+	// on top of PadPanels.tsx's DEFAULT_PANEL_RECTS symmetric grid. Only
+	// needed once someone swaps in a real photo of their own pad -- the
+	// bundled pad-background.png is already drawn to the default grid.
+	// Keyed sparsely: a direction with no entry just uses the default.
+	panelRects: Partial<Record<Direction, PanelRect>>;
+}
+
+type ComponentConfig = GraphConfig | SensorsConfig | HeartrateConfig | SongTickerConfig | PadConfig;
 
 const hexToRgba = (hex: string): { r: number; g: number; b: number; a: number } => {
 	const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -160,6 +196,25 @@ const decodeColorListFromUrl = (colorsParam: string): string[] =>
 // Encode/decode sensor labels for URL
 const encodeSensorLabelsForUrl = (labels: string[]): string => labels.map((label) => encodeURIComponent(label)).join(";");
 const decodeSensorLabelsFromUrl = (labelsParam: string): string[] => labelsParam.split(";").map((label) => decodeURIComponent(label));
+
+// Encode/decode per-panel position overrides for URL. Same format obs/pad.tsx
+// decodes: "up:top,left,width,height;down:...". Only directions the user has
+// actually nudged away from the default grid need to be included.
+const encodePanelRectsForUrl = (rects: Partial<Record<Direction, PanelRect>>): string =>
+	(Object.entries(rects) as [Direction, PanelRect][])
+		.map(([dir, r]) => `${dir}:${r.top},${r.left},${r.width},${r.height}`)
+		.join(";");
+const decodePanelRectsFromUrl = (panelRectsParam: string): Partial<Record<Direction, PanelRect>> => {
+	const result: Partial<Record<Direction, PanelRect>> = {};
+	for (const entry of panelRectsParam.split(";")) {
+		const [dir, nums] = entry.split(":");
+		if (!dir || !nums) continue;
+		const [top, left, width, height] = nums.split(",").map(Number);
+		if ([top, left, width, height].some((n) => Number.isNaN(n))) continue;
+		result[dir as Direction] = { top, left, width, height };
+	}
+	return result;
+};
 
 const parseRgbaString = (rgbaString: string): { r: number; g: number; b: number; a: number } => {
 	// Handle hex colors
@@ -335,7 +390,20 @@ const DEFAULT_CONFIGS = {
 		fadeMs: 500,
 		containerBackgroundColor: "rgba(0, 0, 0, 0.55)",
 		textColor: "rgba(255, 255, 255, 1)",
+		fontScale: 1,
+		bannerScale: 1,
+		sessionReset: true,
 	} as SongTickerConfig,
+	pad: {
+		padImageUrl: null,
+		sensorColors: ["#3a7da3", "#d4607c", "#8670d4", "#d49b20", "#459ea0", "#d45478"],
+		sensorLabels: [],
+		idleOpacity: 0.22,
+		activeOpacity: 0.95,
+		glowEnabled: true,
+		containerBackgroundColor: "rgba(0, 0, 0, 0)",
+		panelRects: {},
+	} as PadConfig,
 };
 
 const getHeartrateHistoryMs = (timeWindowSeconds: number) => {
@@ -343,7 +411,7 @@ const getHeartrateHistoryMs = (timeWindowSeconds: number) => {
 	return timeWindowMs + Math.max(5000, Math.round(timeWindowMs * 0.25));
 };
 
-export function OBSComponentDialog({ open, onOpenChange, password: passwordProp }: OBSComponentDialogProps) {
+export function OBSComponentDialog({ open, onOpenChange, password: passwordProp, liveValues, liveThresholds }: OBSComponentDialogProps) {
 	const { activeProfile } = useProfileManager();
 	const [selectedComponent, setSelectedComponent] = useState<ComponentType>("graph");
 	const [graphConfig, setGraphConfig] = useState<GraphConfig>(DEFAULT_CONFIGS.graph);
@@ -355,6 +423,13 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 	const [customHeartUploading, setCustomHeartUploading] = useState(false);
 	const [customHeartUploadError, setCustomHeartUploadError] = useState<string | null>(null);
 	const [songsConfig, setSongsConfig] = useState<SongTickerConfig>(DEFAULT_CONFIGS.songs);
+	const [padConfig, setPadConfig] = useState<PadConfig>(() => ({
+		...DEFAULT_CONFIGS.pad,
+		sensorLabels: activeProfile?.sensorLabels || [],
+	}));
+	const [padImageUploading, setPadImageUploading] = useState(false);
+	const [padImageUploadError, setPadImageUploadError] = useState<string | null>(null);
+	const [calibrateDirection, setCalibrateDirection] = useState<Direction>("up");
 	const [url, setUrl] = useState("");
 	const [copied, setCopied] = useState(false);
 	const [timeWindowInput, setTimeWindowInput] = useState<string>("");
@@ -400,6 +475,10 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 				...prev,
 				sensorLabels: activeProfile.sensorLabels || [],
 			}));
+			setPadConfig((prev) => ({
+				...prev,
+				sensorLabels: activeProfile.sensorLabels || [],
+			}));
 		}
 	}, [open, activeProfile?.sensorLabels]);
 
@@ -423,7 +502,9 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 				? sensorsConfig
 				: selectedComponent === "heartrate"
 					? heartrateConfig
-					: songsConfig;
+					: selectedComponent === "songs"
+						? songsConfig
+						: padConfig;
 
 	const previewContainerRef = useRef<HTMLDivElement>(null);
 	const sensorsInnerRef = useRef<HTMLDivElement>(null);
@@ -440,6 +521,9 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 		return Math.round(clamped * maxSensorVal);
 	});
 	const mockThresholds = Array.from({ length: 6 }, () => Math.round(maxSensorVal * 0.6));
+	// True once an actual pad is connected and reporting -- the pad preview
+	// uses this to switch from the sine-wave demo to your real presses.
+	const hasLiveData = Array.isArray(liveValues) && liveValues.length > 0;
 	const mockHeartrate = mockHeartrateHistory.length > 0 ? mockHeartrateHistory[mockHeartrateHistory.length - 1].heartrate : 100;
 
 	const mockLabels = Array.from({ length: 6 }, (_, index) => {
@@ -523,6 +607,8 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 		c != null && ((c as HeartrateConfig).mode === "current" || (c as HeartrateConfig).mode === "graph");
 	const isSongsConfig = (c: ComponentConfig): c is SongTickerConfig =>
 		c != null && typeof (c as SongTickerConfig).count === "number" && typeof (c as SongTickerConfig).fadeMs === "number";
+	const isPadConfig = (c: ComponentConfig): c is PadConfig =>
+		c != null && typeof (c as PadConfig).idleOpacity === "number" && Array.isArray((c as PadConfig).sensorColors);
 
 	const generateUrl = () => {
 		// In Electron, always prefer the local OBS static server's base URL
@@ -748,6 +834,39 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 			if (songsConfig.textColor !== DEFAULT_CONFIGS.songs.textColor) {
 				params.set("textColor", songsConfig.textColor);
 			}
+			if (songsConfig.fontScale !== DEFAULT_CONFIGS.songs.fontScale) {
+				params.set("fontScale", songsConfig.fontScale.toFixed(2));
+			}
+			if (songsConfig.bannerScale !== DEFAULT_CONFIGS.songs.bannerScale) {
+				params.set("bannerScale", songsConfig.bannerScale.toFixed(2));
+			}
+			if (!songsConfig.sessionReset) params.set("sessionReset", "false");
+		} else if (selectedComponent === "pad" && isPadConfig(config)) {
+			const padConfig = config;
+			if (padConfig.padImageUrl) params.set("padImage", padConfig.padImageUrl);
+			if (padConfig.sensorColors.join(",") !== DEFAULT_CONFIGS.pad.sensorColors.join(",")) {
+				params.set("colors", encodeColorListForUrl(padConfig.sensorColors));
+			}
+			if (
+				padConfig.sensorLabels &&
+				padConfig.sensorLabels.length > 0 &&
+				padConfig.sensorLabels.some((label, index) => label !== `Sensor ${index + 1}`)
+			) {
+				params.set("sensorLabels", encodeSensorLabelsForUrl(padConfig.sensorLabels));
+			}
+			if (padConfig.idleOpacity !== DEFAULT_CONFIGS.pad.idleOpacity) {
+				params.set("idleOpacity", padConfig.idleOpacity.toString());
+			}
+			if (padConfig.activeOpacity !== DEFAULT_CONFIGS.pad.activeOpacity) {
+				params.set("activeOpacity", padConfig.activeOpacity.toString());
+			}
+			if (!padConfig.glowEnabled) params.set("glow", "false");
+			if (padConfig.containerBackgroundColor !== DEFAULT_CONFIGS.pad.containerBackgroundColor) {
+				params.set("containerBgColor", padConfig.containerBackgroundColor);
+			}
+			if (padConfig.panelRects && Object.keys(padConfig.panelRects).length > 0) {
+				params.set("panelRects", encodePanelRectsForUrl(padConfig.panelRects));
+			}
 		}
 
 		const finalUrl = `${baseUrl}?${params.toString()}`;
@@ -800,6 +919,66 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 
 	const updateSongsConfig = (updates: Partial<SongTickerConfig>) => {
 		setSongsConfig((prev) => ({ ...prev, ...updates }));
+	};
+
+	const updatePadConfig = (updates: Partial<PadConfig>) => {
+		setPadConfig((prev) => ({ ...prev, ...updates }));
+	};
+
+	// Nudges one direction's rect. Starts from DEFAULT_PANEL_RECTS (not the
+	// bare field being dragged) so the very first drag on a fresh pad
+	// writes a complete {top,left,width,height} for that direction rather
+	// than a partial object -- keeps encodePanelRectsForUrl/PadPanelsOverlay
+	// from ever having to guess at missing fields for a direction that's
+	// already been touched.
+	const updatePanelRect = (direction: Direction, updates: Partial<PanelRect>) => {
+		setPadConfig((prev) => ({
+			...prev,
+			panelRects: {
+				...prev.panelRects,
+				[direction]: { ...DEFAULT_PANEL_RECTS[direction], ...prev.panelRects[direction], ...updates },
+			},
+		}));
+	};
+
+	const resetPanelRect = (direction: Direction) => {
+		setPadConfig((prev) => {
+			const next = { ...prev.panelRects };
+			delete next[direction];
+			return { ...prev, panelRects: next };
+		});
+	};
+
+	// Uploads a user-picked pad background image to the public "pad-images"
+	// Supabase Storage bucket -- same pattern as uploadCustomHeartImage
+	// above. Create this bucket (public, same as "hearts") once in the
+	// Supabase dashboard before using this. Storing just the public URL in
+	// config (rather than the raw file/data URL) keeps the generated OBS
+	// URL a normal length instead of embedding an entire image in it.
+	const uploadPadImage = async (file: File) => {
+		setPadImageUploading(true);
+		setPadImageUploadError(null);
+		try {
+			const ext = (file.name.split(".").pop() || "png").toLowerCase().slice(0, 5);
+			const path = `custom/${Date.now()}-${Math.round(Math.random() * 1e6)}.${ext}`;
+
+			const { error: uploadError } = await supabase.storage.from("pad-images").upload(path, file, {
+				contentType: file.type || "image/png",
+				upsert: true,
+			});
+
+			if (uploadError) {
+				setPadImageUploadError(uploadError.message);
+				return;
+			}
+
+			const publicUrl = supabase.storage.from("pad-images").getPublicUrl(path).data.publicUrl;
+			updatePadConfig({ padImageUrl: publicUrl });
+		} catch (err) {
+			setPadImageUploadError(err instanceof Error ? err.message : "Couldn't upload that image.");
+		} finally {
+			setPadImageUploading(false);
+		}
 	};
 
 	const getSelectedSensorIndices = () => {
@@ -1002,7 +1181,48 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 				const textColor = params.get("textColor");
 				if (textColor) songsConfig.textColor = textColor;
 
+				const fontScaleParam = Number(params.get("fontScale"));
+				songsConfig.fontScale = Number.isFinite(fontScaleParam) && fontScaleParam > 0
+					? Math.max(0.5, Math.min(3, fontScaleParam))
+					: DEFAULT_CONFIGS.songs.fontScale;
+
+				const bannerScaleParam = Number(params.get("bannerScale"));
+				songsConfig.bannerScale = Number.isFinite(bannerScaleParam) && bannerScaleParam > 0
+					? Math.max(0.5, Math.min(3, bannerScaleParam))
+					: DEFAULT_CONFIGS.songs.bannerScale;
+
+				songsConfig.sessionReset = params.get("sessionReset") !== "false";
+
 				setSongsConfig(songsConfig);
+			} else if (selectedComponent === "pad") {
+				const padConfig = { ...DEFAULT_CONFIGS.pad };
+
+				const padImage = params.get("padImage");
+				if (padImage) padConfig.padImageUrl = padImage;
+
+				const colorsParam = params.get("colors");
+				if (colorsParam) padConfig.sensorColors = decodeColorListFromUrl(colorsParam);
+
+				const sensorLabels = params.get("sensorLabels");
+				if (sensorLabels) padConfig.sensorLabels = decodeSensorLabelsFromUrl(sensorLabels);
+
+				const idleOpacity = params.get("idleOpacity");
+				if (idleOpacity) padConfig.idleOpacity = Math.max(0, Math.min(1, Number(idleOpacity) || DEFAULT_CONFIGS.pad.idleOpacity));
+
+				const activeOpacity = params.get("activeOpacity");
+				if (activeOpacity) {
+					padConfig.activeOpacity = Math.max(0, Math.min(1, Number(activeOpacity) || DEFAULT_CONFIGS.pad.activeOpacity));
+				}
+
+				padConfig.glowEnabled = params.get("glow") !== "false";
+
+				const containerBackgroundColor = params.get("containerBgColor");
+				if (containerBackgroundColor) padConfig.containerBackgroundColor = containerBackgroundColor;
+
+				const panelRectsParam = params.get("panelRects");
+				if (panelRectsParam) padConfig.panelRects = decodePanelRectsFromUrl(panelRectsParam);
+
+				setPadConfig(padConfig);
 			}
 		} catch (err) {
 			console.error("Failed to parse URL:", err);
@@ -1093,6 +1313,9 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 			]
 				.slice(0, songsConfig.count);
 
+			const fs = songsConfig.fontScale;
+			const bs = songsConfig.bannerScale;
+
 			return (
 				<div className="w-full h-full bg-black overflow-hidden p-1.5 flex flex-col items-start gap-1.5 justify-end">
 					{mockSongs.map((song) => {
@@ -1101,55 +1324,151 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 						return (
 							<div
 								key={song.title}
-								className="flex items-center gap-2 rounded-md overflow-hidden px-2 py-1.5 self-start w-fit max-w-full"
-								style={{ backgroundColor: songsConfig.containerBackgroundColor, color: songsConfig.textColor }}
+								className="flex items-start overflow-hidden self-start w-fit max-w-full"
+								style={{
+									gap: 8 * fs,
+									borderRadius: 6 * fs,
+									paddingLeft: 8 * fs,
+									paddingRight: 8 * fs,
+									paddingTop: 6 * fs,
+									paddingBottom: 6 * fs,
+									backgroundColor: songsConfig.containerBackgroundColor,
+									color: songsConfig.textColor,
+								}}
 							>
-								{songsConfig.showBanner && <div className="w-14 h-[24px] rounded shrink-0 bg-white/10" />}
+								{songsConfig.showBanner && (
+									<div
+										className="rounded shrink-0 bg-white/10"
+										style={{ width: 56 * bs, height: 24 * bs }}
+									/>
+								)}
 								<div className="min-w-0 flex-1">
-									<div className="font-semibold text-[11px] leading-tight truncate">{song.title}</div>
-									<div className="text-[9px] opacity-70 leading-tight truncate">{song.artist}</div>
-									<div className="flex items-center gap-1 mt-0.5">
-										<span className="inline-block px-1 py-px text-[8px] font-bold rounded bg-red-600 text-white">
+									<div className="font-semibold leading-tight truncate" style={{ fontSize: 11 * fs }}>
+										{song.title}
+									</div>
+									<div className="opacity-70 leading-tight truncate" style={{ fontSize: 9 * fs }}>
+										{song.artist}
+									</div>
+									<div className="flex items-center gap-1" style={{ marginTop: 2 * fs }}>
+										<span
+											className="inline-block px-1 py-px font-bold rounded bg-red-600 text-white"
+											style={{ fontSize: 8 * fs }}
+										>
 											{difficultyBadge(song.style, song.difficultyName, song.difficulty)}
 										</span>
 										{rateLabel && (
-											<span className="inline-block px-1 py-px text-[8px] font-bold rounded bg-violet-600 text-white">
+											<span
+												className="inline-block px-1 py-px font-bold rounded bg-violet-600 text-white"
+												style={{ fontSize: 8 * fs }}
+											>
 												{rateLabel}
 											</span>
 										)}
 									</div>
+
+									{(songsConfig.showGrade || songsConfig.showStats) && (
+										<div className="flex items-center" style={{ gap: 8 * fs, marginTop: 4 * fs }}>
+											{songsConfig.showGrade && (
+												<div className="flex flex-col items-center gap-px shrink-0">
+													<span
+														className={`inline-flex items-center justify-center px-1 py-px rounded font-bold tabular-nums ${gradeClassName}`}
+														style={{ fontSize: 10 * fs, minWidth: 28 * fs }}
+													>
+														{gradeLabel}
+													</span>
+													<span className="opacity-70 tabular-nums" style={{ fontSize: 8 * fs }}>
+														{song.score}%
+													</span>
+												</div>
+											)}
+											{songsConfig.showStats && (
+												<div className="flex items-center shrink-0" style={{ gap: 6 * fs, fontSize: 8 * fs }}>
+													<div className="text-center">
+														<div className="opacity-60 uppercase tracking-wide">HR</div>
+														<div className="tabular-nums" style={{ fontSize: 11 * fs }}>{song.avgHr ?? "—"}</div>
+													</div>
+													<div className="text-center">
+														<div className="opacity-60 uppercase tracking-wide">Max</div>
+														<div className="tabular-nums" style={{ fontSize: 11 * fs }}>{song.maxHr ?? "—"}</div>
+													</div>
+													<div className="text-center">
+														<div className="opacity-60 uppercase tracking-wide">Cal</div>
+														<div className="tabular-nums" style={{ fontSize: 11 * fs }}>{song.calories ?? "—"}</div>
+													</div>
+													<div className="text-center">
+														<div className="opacity-60 uppercase tracking-wide">Time</div>
+														<div className="tabular-nums" style={{ fontSize: 11 * fs }}>{formatDuration(song.durationSeconds)}</div>
+													</div>
+												</div>
+											)}
+										</div>
+									)}
 								</div>
-								{songsConfig.showGrade && (
-									<div className="flex flex-col items-center gap-px shrink-0">
-										<span className={`inline-flex items-center justify-center min-w-[1.75rem] px-1 py-px rounded font-bold text-[10px] tabular-nums ${gradeClassName}`}>
-											{gradeLabel}
-										</span>
-										<span className="text-[8px] opacity-70 tabular-nums">{song.score}%</span>
-									</div>
-								)}
-								{songsConfig.showStats && (
-									<div className="flex items-center gap-1.5 text-[8px] shrink-0">
-										<div className="text-center">
-											<div className="opacity-60 uppercase tracking-wide">HR</div>
-											<div className="tabular-nums">{song.avgHr ?? "—"}</div>
-										</div>
-										<div className="text-center">
-											<div className="opacity-60 uppercase tracking-wide">Max</div>
-											<div className="tabular-nums">{song.maxHr ?? "—"}</div>
-										</div>
-										<div className="text-center">
-											<div className="opacity-60 uppercase tracking-wide">Cal</div>
-											<div className="tabular-nums">{song.calories ?? "—"}</div>
-										</div>
-										<div className="text-center">
-											<div className="opacity-60 uppercase tracking-wide">Time</div>
-											<div className="tabular-nums">{formatDuration(song.durationSeconds)}</div>
-										</div>
-									</div>
-								)}
 							</div>
 						);
 					})}
+				</div>
+			);
+		}
+
+		if (selectedComponent === "pad" && isPadConfig(config)) {
+			const padConfig = config;
+			const previewLabels = padConfig.sensorLabels.length > 0 ? padConfig.sensorLabels : mockLabels;
+			const sensors: PadSensor[] = previewLabels.map((label, i) => ({
+				index: i,
+				label,
+				color: padConfig.sensorColors[i % padConfig.sensorColors.length] || "#ffffff",
+			}));
+			// Prefer your actual pad's readings when it's connected, so you
+			// can step on the real panels and watch this preview react
+			// before ever generating the OBS URL. liveThresholds falls back
+			// to the demo thresholds if that array is shorter/missing for
+			// some reason, rather than treating every sensor as inactive.
+			const isActive = hasLiveData
+				? (sensorIndex: number) =>
+						(liveValues?.[sensorIndex] ?? 0) >= (liveThresholds?.[sensorIndex] ?? mockThresholds[sensorIndex])
+				: (sensorIndex: number) => mockValues[sensorIndex] >= mockThresholds[sensorIndex];
+
+			return (
+				<div
+					className="w-full h-full flex items-center justify-center relative"
+					style={{ backgroundColor: padConfig.containerBackgroundColor }}
+				>
+					<div
+						className="absolute top-2 left-2 z-10 rounded px-2 py-0.5 text-[11px] font-medium"
+						style={
+							hasLiveData
+								? { backgroundColor: "rgba(34, 197, 94, 0.15)", color: "#4ade80", border: "1px solid rgba(74, 222, 128, 0.4)" }
+								: { backgroundColor: "rgba(255, 255, 255, 0.08)", color: "rgba(255,255,255,0.6)", border: "1px solid rgba(255,255,255,0.15)" }
+						}
+					>
+						{hasLiveData ? "Live -- press your pad" : "Demo animation (pad not connected)"}
+					</div>
+
+					{/* height-driven square: the preview pane's height is fixed by
+					    the dialog layout while its width varies with viewport, so
+					    sizing off height (with a maxWidth safety clamp for narrow
+					    windows) is what keeps the whole pad visible instead of the
+					    top/bottom getting clipped by the container's overflow-hidden. */}
+					<div className="relative" style={{ height: "90%", aspectRatio: "1 / 1", maxWidth: "100%" }}>
+						<img
+							src={padConfig.padImageUrl || "./pad-background.png"}
+							alt="Pad layout"
+							draggable={false}
+							className="absolute inset-0 w-full h-full object-cover rounded-lg select-none"
+							onError={(e) => {
+								(e.target as HTMLImageElement).style.visibility = "hidden";
+							}}
+						/>
+						<PadPanelsOverlay
+							sensors={sensors}
+							isActive={isActive}
+							idleOpacity={padConfig.idleOpacity}
+							activeOpacity={padConfig.activeOpacity}
+							glowEnabled={padConfig.glowEnabled}
+							panelRects={padConfig.panelRects}
+						/>
+					</div>
 				</div>
 			);
 		}
@@ -1201,14 +1520,6 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 						heartIconSize={heartrateConfig.heartIconSize}
 						heartIconStyle={heartrateConfig.heartIconStyle}
 						customHeartImageUrl={heartrateConfig.customHeartImageUrl}
-						// This preview renders inside the main app bundle, loaded via
-						// file:///.../dist/index.html (Vite base "./"), not over an
-						// http:// origin like the actual OBS overlay page -- a
-						// root-relative "/hearts/..." path would 404 against the
-						// filesystem root here, so use import.meta.env.BASE_URL
-						// ("./" in this build) instead, resolving relative to
-						// index.html's own directory (dist/).
-						heartImageBaseUrl={`${import.meta.env.BASE_URL}hearts`}
 						calorieIconStyle={heartrateConfig.calorieIconStyle}
 					/>
 				)}
@@ -1239,6 +1550,7 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 										<SelectItem value="sensors">Sensors</SelectItem>
 										<SelectItem value="heartrate">Heartrate Monitor</SelectItem>
 										<SelectItem value="songs">Song Ticker</SelectItem>
+										<SelectItem value="pad">Pad Preview</SelectItem>
 									</SelectContent>
 								</Select>
 							</div>
@@ -2430,6 +2742,49 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 											/>
 										</div>
 
+										<div className="space-y-3 rounded-md border p-3">
+											<div className="flex items-center justify-between gap-3">
+												<Label htmlFor="songsFontScale" className="text-sm">
+													Font size
+												</Label>
+												<span className="text-xs text-muted-foreground">
+													{(config as SongTickerConfig).fontScale.toFixed(2)}x
+												</span>
+											</div>
+											<Slider
+												id="songsFontScale"
+												value={[(config as SongTickerConfig).fontScale]}
+												min={0.5}
+												max={3}
+												step={0.05}
+												onValueChange={(value) =>
+													updateSongsConfig({ fontScale: value[0] ?? (config as SongTickerConfig).fontScale })
+												}
+											/>
+										</div>
+
+										<div className="space-y-3 rounded-md border p-3">
+											<div className="flex items-center justify-between gap-3">
+												<Label htmlFor="songsBannerScale" className="text-sm">
+													Banner size
+												</Label>
+												<span className="text-xs text-muted-foreground">
+													{(config as SongTickerConfig).bannerScale.toFixed(2)}x
+												</span>
+											</div>
+											<Slider
+												id="songsBannerScale"
+												value={[(config as SongTickerConfig).bannerScale]}
+												min={0.5}
+												max={3}
+												step={0.05}
+												onValueChange={(value) =>
+													updateSongsConfig({ bannerScale: value[0] ?? (config as SongTickerConfig).bannerScale })
+												}
+												disabled={!(config as SongTickerConfig).showBanner}
+											/>
+										</div>
+
 										<div className="flex items-center space-x-2">
 											<Checkbox
 												id="songsShowBanner"
@@ -2460,6 +2815,21 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 												Show Avg HR / Max HR / Cal / Time
 											</Label>
 										</div>
+										<div className="flex items-center space-x-2">
+											<Checkbox
+												id="songsSessionReset"
+												checked={(config as SongTickerConfig).sessionReset}
+												onCheckedChange={(checked) => updateSongsConfig({ sessionReset: Boolean(checked) })}
+											/>
+											<Label htmlFor="songsSessionReset" className="cursor-pointer">
+												Reset ticker on new OBS session
+											</Label>
+										</div>
+										<p className="text-[11px] text-muted-foreground -mt-2">
+											When enabled, the ticker starts empty each time OBS (re)loads it and only
+											fills in with songs played from that point on -- it won't show songs left
+											over from a previous stream.
+										</p>
 
 										<ColorField
 											id="songsBgColor"
@@ -2473,6 +2843,234 @@ export function OBSComponentDialog({ open, onOpenChange, password: passwordProp 
 											color={(config as SongTickerConfig).textColor}
 											onChange={(color) => updateSongsConfig({ textColor: color })}
 										/>
+									</div>
+								</div>
+							</div>
+						)}
+
+						{selectedComponent === "pad" && (
+							<div className="flex flex-wrap gap-6 justify-center items-start">
+								<div className="space-y-4 min-w-[280px] max-w-[360px]">
+									<Label className="text-lg font-semibold">Pad Image</Label>
+									<div className="space-y-3">
+										<div className="flex items-center gap-3">
+											<img
+												src={(config as PadConfig).padImageUrl || "./pad-background.png"}
+												alt=""
+												className="h-14 w-14 rounded object-cover border bg-white/5"
+												onError={(e) => {
+													(e.target as HTMLImageElement).style.visibility = "hidden";
+												}}
+											/>
+											<Input
+												type="file"
+												accept="image/png,image/jpeg,image/webp,image/gif"
+												disabled={padImageUploading}
+												onChange={(e) => {
+													const file = e.target.files?.[0];
+													if (file) void uploadPadImage(file);
+													e.target.value = "";
+												}}
+												className="text-xs"
+											/>
+										</div>
+										<p className="text-xs text-muted-foreground">
+											{padImageUploading
+												? "Uploading…"
+												: 'Any pad layout works -- panels light up by matching each sensor\'s label ("Up", "Down 2", etc.) to the matching quadrant of this image.'}
+										</p>
+										{padImageUploadError && <p className="text-xs text-destructive">{padImageUploadError}</p>}
+										{(config as PadConfig).padImageUrl && (
+											<Button variant="outline" size="sm" onClick={() => updatePadConfig({ padImageUrl: null })}>
+												Reset to default image
+											</Button>
+										)}
+									</div>
+
+									<div className="space-y-2">
+										<Label>Sensor Labels</Label>
+										<div className="grid grid-cols-2 gap-3">
+											{Array.from({ length: 6 }, (_, index) => (
+												<div key={`pad-sensor-label-input-${index + 1}`} className="space-y-2">
+													<Input
+														value={(config as PadConfig).sensorLabels?.[index] || `Sensor ${index + 1}`}
+														onChange={(e) => {
+															const newLabels = [...((config as PadConfig).sensorLabels || [])];
+															newLabels[index] = e.target.value;
+															updatePadConfig({ sensorLabels: newLabels });
+														}}
+														className="h-8 text-sm"
+														placeholder={`Sensor ${index + 1}`}
+													/>
+												</div>
+											))}
+										</div>
+										<p className="text-[11px] text-muted-foreground">
+											A panel lights up when a sensor's label contains its direction -- e.g.
+											"Up" and "Up 2" both light the Up panel, split down the middle.
+										</p>
+									</div>
+								</div>
+
+								<div className="space-y-4 min-w-[280px] max-w-[360px]">
+									<Label className="text-lg font-semibold">Colors</Label>
+									<div className="space-y-4">
+										<div className="space-y-3">
+											<Label className="text-sm">Sensor Colors</Label>
+											<div className="flex gap-2 flex-wrap">
+												{(config as PadConfig).sensorColors.map((color, index) => (
+													<Popover key={`pad-${SENSOR_COLOR_KEYS[index]}`}>
+														<PopoverTrigger asChild>
+															<button
+																type="button"
+																className="w-8 h-8 rounded border cursor-pointer relative overflow-hidden"
+																style={getTransparencySwatchStyle(color)}
+															/>
+														</PopoverTrigger>
+														<PopoverContent className="w-auto p-3">
+															<RgbaColorPicker
+																color={parseRgbaString(color)}
+																onChange={(newColor) => {
+																	const newColors = [...(config as PadConfig).sensorColors];
+																	newColors[index] = rgbaToString(newColor);
+																	updatePadConfig({ sensorColors: newColors });
+																}}
+															/>
+														</PopoverContent>
+													</Popover>
+												))}
+											</div>
+										</div>
+										<ColorField
+											id="padContainerBg"
+											label="Container Background"
+											color={(config as PadConfig).containerBackgroundColor}
+											onChange={(color) => updatePadConfig({ containerBackgroundColor: color })}
+										/>
+									</div>
+								</div>
+
+								<div className="space-y-4 min-w-[280px] max-w-[360px]">
+									<Label className="text-lg font-semibold">Appearance</Label>
+									<div className="space-y-3">
+										<div className="space-y-3 rounded-md border p-3">
+											<div className="flex items-center justify-between gap-3">
+												<Label htmlFor="padIdleOpacity" className="text-sm">
+													Idle panel opacity
+												</Label>
+												<span className="text-xs text-muted-foreground">
+													{(config as PadConfig).idleOpacity.toFixed(2)}
+												</span>
+											</div>
+											<Slider
+												id="padIdleOpacity"
+												value={[(config as PadConfig).idleOpacity]}
+												min={0}
+												max={1}
+												step={0.02}
+												onValueChange={(value) =>
+													updatePadConfig({ idleOpacity: value[0] ?? (config as PadConfig).idleOpacity })
+												}
+											/>
+										</div>
+										<div className="space-y-3 rounded-md border p-3">
+											<div className="flex items-center justify-between gap-3">
+												<Label htmlFor="padActiveOpacity" className="text-sm">
+													Active panel opacity
+												</Label>
+												<span className="text-xs text-muted-foreground">
+													{(config as PadConfig).activeOpacity.toFixed(2)}
+												</span>
+											</div>
+											<Slider
+												id="padActiveOpacity"
+												value={[(config as PadConfig).activeOpacity]}
+												min={0}
+												max={1}
+												step={0.02}
+												onValueChange={(value) =>
+													updatePadConfig({ activeOpacity: value[0] ?? (config as PadConfig).activeOpacity })
+												}
+											/>
+										</div>
+										<div className="flex items-center space-x-2">
+											<Checkbox
+												id="padGlow"
+												checked={(config as PadConfig).glowEnabled}
+												onCheckedChange={(checked) => updatePadConfig({ glowEnabled: Boolean(checked) })}
+											/>
+											<Label htmlFor="padGlow" className="cursor-pointer">
+												Glow on active panels
+											</Label>
+										</div>
+									</div>
+								</div>
+								<div className="space-y-4 min-w-[280px] max-w-[360px]">
+									<Label className="text-lg font-semibold">Panel Position</Label>
+									<p className="text-[11px] text-muted-foreground -mt-2">
+										The default grid matches the bundled pad-background.png. If you upload a
+										photo of your own pad instead, use this to nudge each panel until the
+										highlight in the preview above lines up with the real button -- watch the
+										preview while you drag.
+									</p>
+									<div className="space-y-3">
+										<Select value={calibrateDirection} onValueChange={(value) => setCalibrateDirection(value as Direction)}>
+											<SelectTrigger className="h-9 text-sm">
+												<SelectValue />
+											</SelectTrigger>
+											<SelectContent>
+												<SelectItem value="up">Up panel</SelectItem>
+												<SelectItem value="down">Down panel</SelectItem>
+												<SelectItem value="left">Left panel</SelectItem>
+												<SelectItem value="right">Right panel</SelectItem>
+											</SelectContent>
+										</Select>
+
+										{(() => {
+											const rect = {
+												...DEFAULT_PANEL_RECTS[calibrateDirection],
+												...(config as PadConfig).panelRects[calibrateDirection],
+											};
+											const fields: { key: keyof PanelRect; label: string }[] = [
+												{ key: "top", label: "Top" },
+												{ key: "left", label: "Left" },
+												{ key: "width", label: "Width" },
+												{ key: "height", label: "Height" },
+											];
+											return (
+												<div className="space-y-3 rounded-md border p-3">
+													{fields.map(({ key, label }) => (
+														<div key={key} className="space-y-1">
+															<div className="flex items-center justify-between gap-3">
+																<Label htmlFor={`padPanelRect-${key}`} className="text-sm">
+																	{label}
+																</Label>
+																<span className="text-xs text-muted-foreground">{rect[key].toFixed(1)}%</span>
+															</div>
+															<Slider
+																id={`padPanelRect-${key}`}
+																value={[rect[key]]}
+																min={0}
+																max={100}
+																step={0.5}
+																onValueChange={(value) =>
+																	updatePanelRect(calibrateDirection, { [key]: value[0] ?? rect[key] })
+																}
+															/>
+														</div>
+													))}
+												</div>
+											);
+										})()}
+
+										<div className="flex gap-2">
+											<Button variant="outline" size="sm" onClick={() => resetPanelRect(calibrateDirection)}>
+												Reset this panel
+											</Button>
+											<Button variant="outline" size="sm" onClick={() => updatePadConfig({ panelRects: {} })}>
+												Reset all panels
+											</Button>
+										</div>
 									</div>
 								</div>
 							</div>

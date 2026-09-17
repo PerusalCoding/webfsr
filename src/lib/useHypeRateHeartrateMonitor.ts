@@ -64,6 +64,20 @@ export function useHypeRateHeartrateMonitor(sessionId: string) {
 	const reconnectTimerRef = useRef<number | null>(null);
 	const countdownTimerRef = useRef<number | null>(null);
 	const staleCheckTimerRef = useRef<number | null>(null);
+	// Two independent triggers can each decide to start a fresh connect()
+	// attempt around the same time -- the stale-data watchdog (below) and
+	// a backoff-scheduled reconnect from scheduleReconnect(). Since
+	// connect() tears down and replaces socketRef.current at its start,
+	// an overlapping second attempt would silently orphan the first
+	// attempt's in-flight Promise (its resolve() never gets called, since
+	// teardown() nulls its handlers out from under it). Harmless in
+	// practice today since nothing awaits connect()'s return value here,
+	// but it's needless socket churn and state flicker. connectGenerationRef
+	// lets every attempt's callbacks check "is a newer attempt already
+	// running instead of me?" and no-op if so; attemptInFlightRef lets the
+	// watchdog/backoff triggers skip starting a redundant attempt entirely.
+	const connectGenerationRef = useRef(0);
+	const attemptInFlightRef = useRef(false);
 
 	const clearTimers = useCallback(() => {
 		if (heartbeatTimerRef.current !== null) {
@@ -124,6 +138,7 @@ export function useHypeRateHeartrateMonitor(sessionId: string) {
 
 		reconnectTimerRef.current = window.setTimeout(() => {
 			if (!wantsConnectionRef.current || !lastSessionIdRef.current) return;
+			if (attemptInFlightRef.current) return;
 			backoffAttemptRef.current = Math.min(MAX_BACKOFF_ATTEMPT_EXPONENT, backoffAttemptRef.current + 1);
 			void connectRef.current();
 		}, delay);
@@ -131,6 +146,12 @@ export function useHypeRateHeartrateMonitor(sessionId: string) {
 
 	const disconnect = useCallback(async () => {
 		wantsConnectionRef.current = false;
+		// Invalidate any attempt currently in flight (its callbacks are
+		// about to be nulled out by teardown() below anyway, so they'd
+		// never clear this themselves) and clear the flag directly so a
+		// later connect() call isn't permanently blocked from starting.
+		connectGenerationRef.current++;
+		attemptInFlightRef.current = false;
 		clearReconnectTimers();
 		if (staleCheckTimerRef.current !== null) {
 			window.clearInterval(staleCheckTimerRef.current);
@@ -161,11 +182,20 @@ export function useHypeRateHeartrateMonitor(sessionId: string) {
 		lastSessionIdRef.current = id;
 		channelRef.current = id;
 
+		const myGeneration = ++connectGenerationRef.current;
+		attemptInFlightRef.current = true;
+		const isCurrentAttempt = () => connectGenerationRef.current === myGeneration;
+
 		return new Promise<boolean>((resolve) => {
 			const socket = new WebSocket(`${HYPERATE_WS_URL}?token=${encodeURIComponent(HYPERATE_API_KEY)}`);
 			socketRef.current = socket;
 
 			const fail = (message: string) => {
+				if (!isCurrentAttempt()) {
+					resolve(false);
+					return;
+				}
+				attemptInFlightRef.current = false;
 				setError(message);
 				setIsConnecting(false);
 				setIsConnected(false);
@@ -175,6 +205,8 @@ export function useHypeRateHeartrateMonitor(sessionId: string) {
 			};
 
 			socket.onopen = () => {
+				if (!isCurrentAttempt()) return;
+
 				// Keep the Phoenix socket alive -- HypeRate closes idle
 				// connections that never send a heartbeat frame.
 				heartbeatTimerRef.current = window.setInterval(() => {
@@ -192,6 +224,8 @@ export function useHypeRateHeartrateMonitor(sessionId: string) {
 			};
 
 			socket.onmessage = (event) => {
+				if (!isCurrentAttempt()) return;
+
 				let parsed: any;
 				try {
 					parsed = JSON.parse(event.data);
@@ -207,6 +241,7 @@ export function useHypeRateHeartrateMonitor(sessionId: string) {
 							joinTimeoutRef.current = null;
 						}
 						if (parsed.payload?.status === "ok") {
+							attemptInFlightRef.current = false;
 							setIsConnecting(false);
 							setIsConnected(true);
 							setIsReconnecting(false);
@@ -236,12 +271,15 @@ export function useHypeRateHeartrateMonitor(sessionId: string) {
 			};
 
 			socket.onerror = () => {
+				if (!isCurrentAttempt()) return;
 				if (joinTimeoutRef.current !== null) {
 					fail("Couldn't reach HypeRate -- check your internet connection.");
 				}
 			};
 
 			socket.onclose = () => {
+				if (!isCurrentAttempt()) return;
+				attemptInFlightRef.current = false;
 				setIsConnected(false);
 				socketRef.current = null;
 				if (wantsConnectionRef.current) scheduleReconnect();
@@ -263,6 +301,7 @@ export function useHypeRateHeartrateMonitor(sessionId: string) {
 			if (!isConnected) return;
 			if (lastHrAtRef.current === 0) return; // haven't received a first sample yet -- give it time
 			if (Date.now() - lastHrAtRef.current < STALE_DATA_TIMEOUT_MS) return;
+			if (attemptInFlightRef.current) return; // a reconnect is already underway
 
 			setIsConnected(false);
 			teardown();

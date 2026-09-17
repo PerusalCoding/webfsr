@@ -40,6 +40,14 @@ export const useHeartrateMonitor = () => {
 	const characteristicRef = useRef<BluetoothRemoteGATTCharacteristic | null>(null);
 	const disconnectListenerRef = useRef<DisconnectListener | null>(null);
 	const hasReceivedSampleRef = useRef<boolean>(false);
+	// True for the whole duration of setupGattConnection's own retry loop
+	// (including the deliberate disconnect()s it does between attempts).
+	// The external gattserverdisconnected listener checks this so it
+	// doesn't fire resetConnectionState mid-loop and stomp on the loop's
+	// own isConnecting/reconnectAttempts bookkeeping -- previously every
+	// deliberate retry-disconnect during initial setup also raced with
+	// the listener resetting that same state out from under it.
+	const internalRetryInProgressRef = useRef<boolean>(false);
 
 	// Check if WebBluetooth is supported
 	const isSupported = typeof navigator !== "undefined" && "bluetooth" in navigator;
@@ -192,93 +200,98 @@ export const useHeartrateMonitor = () => {
 			let attemptCounter = 0;
 			let currentServer: BluetoothRemoteGATTServer | null = null;
 
+			internalRetryInProgressRef.current = true;
 			setIsConnected(false);
 			isConnectedRef.current = false;
 			setReconnectAttempts(0);
 			setError(null);
 			hasReceivedSampleRef.current = false;
 
-			while (attemptCounter <= MAX_RECONNECT_ATTEMPTS) {
-				try {
-					setReconnectAttempts(attemptCounter);
-					updateConnectingState(true, attemptCounter > 0);
+			try {
+				while (attemptCounter <= MAX_RECONNECT_ATTEMPTS) {
+					try {
+						setReconnectAttempts(attemptCounter);
+						updateConnectingState(true, attemptCounter > 0);
 
-					const newServer = await withTimeout<BluetoothRemoteGATTServer>(connectedDevice.gatt?.connect(), "GATT connect");
-					currentServer = newServer;
-					serverRef.current = newServer;
-					setServer(newServer);
+						const newServer = await withTimeout<BluetoothRemoteGATTServer>(connectedDevice.gatt?.connect(), "GATT connect");
+						currentServer = newServer;
+						serverRef.current = newServer;
+						setServer(newServer);
 
-					await sleep(attemptCounter === 0 ? 600 : 300);
+						await sleep(attemptCounter === 0 ? 600 : 300);
 
-					if (!newServer.connected) {
-						throw new Error("GATT server disconnected immediately after connect");
-					}
-
-					const service = await withTimeout<BluetoothRemoteGATTService>(
-						newServer.getPrimaryService(HEARTRATE_SERVICE),
-						"Heart Rate service lookup",
-					);
-
-					const newCharacteristic = await withTimeout<BluetoothRemoteGATTCharacteristic>(
-						service.getCharacteristic(HEARTRATE_CHARACTERISTIC),
-						"Heart Rate measurement characteristic lookup",
-					);
-
-					characteristicRef.current = newCharacteristic;
-					setCharacteristic(newCharacteristic);
-
-					await withTimeout<BluetoothRemoteGATTCharacteristic>(
-						newCharacteristic.startNotifications(),
-						"Heart Rate notifications start",
-					);
-					newCharacteristic.addEventListener("characteristicvaluechanged", handleHeartrateNotification);
-
-					setReconnectAttempts(0);
-					updateConnectingState(false, false);
-					setError(null);
-					setIsConnected(true);
-					isConnectedRef.current = true;
-
-					return true;
-				} catch (err) {
-					const errorMessage = err instanceof Error ? err.message : String(err);
-
-					await teardownCharacteristic();
-
-					if (currentServer?.connected) {
-						try {
-							currentServer.disconnect();
-						} catch {
-							// Ignore disconnection errors
+						if (!newServer.connected) {
+							throw new Error("GATT server disconnected immediately after connect");
 						}
+
+						const service = await withTimeout<BluetoothRemoteGATTService>(
+							newServer.getPrimaryService(HEARTRATE_SERVICE),
+							"Heart Rate service lookup",
+						);
+
+						const newCharacteristic = await withTimeout<BluetoothRemoteGATTCharacteristic>(
+							service.getCharacteristic(HEARTRATE_CHARACTERISTIC),
+							"Heart Rate measurement characteristic lookup",
+						);
+
+						characteristicRef.current = newCharacteristic;
+						setCharacteristic(newCharacteristic);
+
+						await withTimeout<BluetoothRemoteGATTCharacteristic>(
+							newCharacteristic.startNotifications(),
+							"Heart Rate notifications start",
+						);
+						newCharacteristic.addEventListener("characteristicvaluechanged", handleHeartrateNotification);
+
+						setReconnectAttempts(0);
+						updateConnectingState(false, false);
+						setError(null);
+						setIsConnected(true);
+						isConnectedRef.current = true;
+
+						return true;
+					} catch (err) {
+						const errorMessage = err instanceof Error ? err.message : String(err);
+
+						await teardownCharacteristic();
+
+						if (currentServer?.connected) {
+							try {
+								currentServer.disconnect();
+							} catch {
+								// Ignore disconnection errors
+							}
+						}
+
+						serverRef.current = null;
+						setServer(null);
+
+						if (attemptCounter < MAX_RECONNECT_ATTEMPTS) {
+							const dynamicDelay = RECONNECT_DELAY * (1 + 0.5 * attemptCounter);
+							await sleep(dynamicDelay);
+							attemptCounter++;
+							continue;
+						}
+
+						setReconnectAttempts(0);
+						updateConnectingState(false, false);
+						setIsConnected(false);
+						isConnectedRef.current = false;
+
+						if (!isCommonReconnectError(err)) {
+							setError(`Failed to connect: ${errorMessage}`);
+						} else {
+							setError("Failed to establish a stable connection with the heartrate monitor");
+						}
+
+						return false;
 					}
-
-					serverRef.current = null;
-					setServer(null);
-
-					if (attemptCounter < MAX_RECONNECT_ATTEMPTS) {
-						const dynamicDelay = RECONNECT_DELAY * (1 + 0.5 * attemptCounter);
-						await sleep(dynamicDelay);
-						attemptCounter++;
-						continue;
-					}
-
-					setReconnectAttempts(0);
-					updateConnectingState(false, false);
-					setIsConnected(false);
-					isConnectedRef.current = false;
-
-					if (!isCommonReconnectError(err)) {
-						setError(`Failed to connect: ${errorMessage}`);
-					} else {
-						setError("Failed to establish a stable connection with the heartrate monitor");
-					}
-
-					return false;
 				}
-			}
 
-			return false;
+				return false;
+			} finally {
+				internalRetryInProgressRef.current = false;
+			}
 		},
 		[handleHeartrateNotification, teardownCharacteristic, updateConnectingState, withTimeout],
 	);
@@ -319,6 +332,34 @@ export const useHeartrateMonitor = () => {
 			const nextDevice = await navigator.bluetooth.requestDevice({ filters });
 
 			const handleDisconnect = () => {
+				// The internal retry loop in setupGattConnection owns state
+				// management for its own deliberate disconnect()s between
+				// attempts -- don't interfere with it here.
+				if (internalRetryInProgressRef.current) return;
+
+				const wasConnected = isConnectedRef.current;
+				const currentDevice = deviceRef.current;
+
+				if (wasConnected && currentDevice) {
+					// A real mid-session drop -- interference, briefly out
+					// of range, a dongle hiccup -- rather than something
+					// during initial setup. Try to reconnect to this SAME
+					// already-paired device instead of wiping everything
+					// and forcing the user back through the browser's
+					// device picker; keep the last reading on screen while
+					// we retry instead of blanking it immediately.
+					resetConnectionState({ clearHeartrateData: false });
+					void setupGattConnection(currentDevice).then((success) => {
+						if (!success) {
+							// setupGattConnection's own retry budget is
+							// exhausted -- give up for real.
+							removeDisconnectListener(currentDevice);
+							resetConnectionState({ clearDevice: true });
+						}
+					});
+					return;
+				}
+
 				const disconnectedDuringSetup = isConnectingRef.current || isReconnectingRef.current;
 				resetConnectionState({ clearHeartrateData: !disconnectedDuringSetup });
 			};

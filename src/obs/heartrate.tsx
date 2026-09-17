@@ -4,6 +4,8 @@ import "../index.css";
 import {
 	HeartrateCurrentDisplay,
 	HeartrateHistoryGraph,
+	type CalorieIconStyle,
+	type HeartIconStyle,
 	type HeartrateHistoryAxisSide,
 	type HeartrateSample,
 } from "~/components/HeartrateDisplay";
@@ -12,6 +14,23 @@ import { useBiometrics } from "~/lib/useBiometrics";
 import { type ObsBroadcastPayload, useOBS } from "~/lib/useOBS";
 
 type HeartrateMode = "current" | "graph";
+
+// Mirrors HeartIconStyle from HeartrateDisplay.tsx -- kept as a runtime
+// Set (rather than importing a type) so an unrecognized/garbled query
+// param value falls back to the default instead of rendering nothing.
+const VALID_HEART_ICON_STYLES = new Set([
+	"classic",
+	"pixel",
+	"canada",
+	"dragon",
+	"halloweenHeart",
+	"halloweenBat",
+	"flatHeart",
+	"jokr",
+	"retro",
+	"usa",
+	"custom",
+]);
 
 type HeartrateOBSConfig = {
 	mode: HeartrateMode;
@@ -27,6 +46,12 @@ type HeartrateOBSConfig = {
 	zoneLowColor: string;
 	zoneMidColor: string;
 	zoneHighColor: string;
+	bpmFontSize: number;
+	caloriesFontSize: number;
+	heartIconSize: number;
+	heartIconStyle: HeartIconStyle;
+	customHeartImageUrl: string | null;
+	calorieIconStyle: CalorieIconStyle;
 	timeWindow: number;
 	containerBackgroundColor: string;
 	heartColor: string;
@@ -60,6 +85,12 @@ const DEFAULT_CONFIG: HeartrateOBSConfig = {
 	zoneLowColor: "rgba(96, 165, 250, 1)",
 	zoneMidColor: "rgba(250, 204, 21, 1)",
 	zoneHighColor: "rgba(239, 68, 68, 1)",
+	bpmFontSize: 220,
+	caloriesFontSize: 24,
+	heartIconSize: 84,
+	heartIconStyle: "classic",
+	customHeartImageUrl: null,
+	calorieIconStyle: "flame",
 	timeWindow: 30,
 	containerBackgroundColor: "rgba(0, 0, 0, 0.35)",
 	heartColor: "rgba(239, 68, 68, 1)",
@@ -105,6 +136,12 @@ function parseQueryConfig(): HeartrateOBSConfig {
 		zoneLowColor: params.get("zoneLowColor") || DEFAULT_CONFIG.zoneLowColor,
 		zoneMidColor: params.get("zoneMidColor") || DEFAULT_CONFIG.zoneMidColor,
 		zoneHighColor: params.get("zoneHighColor") || DEFAULT_CONFIG.zoneHighColor,
+		bpmFontSize: Math.max(40, Math.min(400, Number(params.get("bpmSize")) || DEFAULT_CONFIG.bpmFontSize)),
+		caloriesFontSize: Math.max(10, Math.min(120, Number(params.get("caloriesSize")) || DEFAULT_CONFIG.caloriesFontSize)),
+		heartIconSize: Math.max(24, Math.min(400, Number(params.get("heartSize")) || DEFAULT_CONFIG.heartIconSize)),
+		heartIconStyle: (VALID_HEART_ICON_STYLES.has(params.get("heartStyle") ?? "") ? (params.get("heartStyle") as HeartIconStyle) : DEFAULT_CONFIG.heartIconStyle),
+		customHeartImageUrl: params.get("heartImage") || DEFAULT_CONFIG.customHeartImageUrl,
+		calorieIconStyle: params.get("calorieIcon") === "pixel" ? "pixel" : DEFAULT_CONFIG.calorieIconStyle,
 		timeWindow: Number(params.get("window")) || DEFAULT_CONFIG.timeWindow,
 		containerBackgroundColor: params.get("containerBgColor") || DEFAULT_CONFIG.containerBackgroundColor,
 		heartColor: params.get("heartColor") || DEFAULT_CONFIG.heartColor,
@@ -287,6 +324,12 @@ function HeartrateOBSComponent() {
 					zoneLowColor={config.zoneLowColor}
 					zoneMidColor={config.zoneMidColor}
 					zoneHighColor={config.zoneHighColor}
+					bpmFontSize={config.bpmFontSize}
+					caloriesFontSize={config.caloriesFontSize}
+					heartIconSize={config.heartIconSize}
+					heartIconStyle={config.heartIconStyle}
+					customHeartImageUrl={config.customHeartImageUrl}
+					calorieIconStyle={config.calorieIconStyle}
 				/>
 			)}
 		</div>

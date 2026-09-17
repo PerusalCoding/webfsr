@@ -14,6 +14,7 @@ type SongTickerConfig = {
 	textColor: string;
 	fontScale: number; // multiplier on all text sizes, 0.5-3
 	bannerScale: number; // multiplier on the banner image size, 0.5-3
+	sessionReset: boolean; // hide songs from before this ticker connected (default true)
 };
 
 // Base (scale=1) pixel sizes for everything that needs to grow with the
@@ -50,6 +51,7 @@ const DEFAULT_CONFIG: SongTickerConfig = {
 	textColor: "rgba(255, 255, 255, 1)",
 	fontScale: 1,
 	bannerScale: 1,
+	sessionReset: true,
 };
 
 // Clamp + fall back to a default when the query param is missing or NaN.
@@ -76,6 +78,7 @@ function parseQueryConfig(): SongTickerConfig {
 		textColor: params.get("textColor") || DEFAULT_CONFIG.textColor,
 		fontScale: parseScale(params.get("fontScale"), DEFAULT_CONFIG.fontScale),
 		bannerScale: parseScale(params.get("bannerScale"), DEFAULT_CONFIG.bannerScale),
+		sessionReset: params.get("sessionReset") !== "false",
 	};
 }
 
@@ -160,7 +163,7 @@ function SongTickerRow({ item, config }: { item: DisplayItem; config: SongTicker
 
 	return (
 		<div
-			className="flex items-center overflow-hidden self-start w-fit max-w-full"
+			className="flex items-start overflow-hidden self-start w-fit max-w-full"
 			style={{
 				gap: BASE_SIZES.rowGap * fs,
 				borderRadius: BASE_SIZES.borderRadius * fs,
@@ -194,7 +197,7 @@ function SongTickerRow({ item, config }: { item: DisplayItem; config: SongTicker
 				<div className="opacity-70 leading-tight truncate" style={{ fontSize: BASE_SIZES.artist * fs }}>
 					{song.artist}
 				</div>
-				<div className="flex items-center gap-1 mt-0.5">
+				<div className="flex items-center gap-1" style={{ marginTop: 2 * fs }}>
 					<span
 						className="inline-block px-1 py-px font-bold rounded bg-red-600 text-white"
 						style={{ fontSize: BASE_SIZES.badge * fs }}
@@ -210,52 +213,56 @@ function SongTickerRow({ item, config }: { item: DisplayItem; config: SongTicker
 						</span>
 					)}
 				</div>
+
+				{(config.showGrade || config.showStats) && (
+					<div className="flex items-center" style={{ gap: BASE_SIZES.rowGap * fs, marginTop: 4 * fs }}>
+						{config.showGrade && (
+							<div className="flex flex-col items-center gap-px shrink-0">
+								<span
+									className={`inline-flex items-center justify-center px-1 py-px rounded font-bold tabular-nums ${gradeClassName}`}
+									style={{ fontSize: BASE_SIZES.gradeLabel * fs, minWidth: 28 * fs }}
+								>
+									{gradeLabel}
+								</span>
+								{song.score && (
+									<span className="opacity-70 tabular-nums" style={{ fontSize: BASE_SIZES.gradeScore * fs }}>
+										{song.score}%
+									</span>
+								)}
+							</div>
+						)}
+
+						{config.showStats && (
+							<div className="flex items-center shrink-0" style={{ gap: 6 * fs, fontSize: BASE_SIZES.statsLabel * fs }}>
+								<div className="text-center">
+									<div className="opacity-60 uppercase tracking-wide">HR</div>
+									<div className="tabular-nums" style={{ fontSize: BASE_SIZES.statsValue * fs }}>
+										{song.avgHr ?? "—"}
+									</div>
+								</div>
+								<div className="text-center">
+									<div className="opacity-60 uppercase tracking-wide">Max</div>
+									<div className="tabular-nums" style={{ fontSize: BASE_SIZES.statsValue * fs }}>
+										{song.maxHr ?? "—"}
+									</div>
+								</div>
+								<div className="text-center">
+									<div className="opacity-60 uppercase tracking-wide">Cal</div>
+									<div className="tabular-nums" style={{ fontSize: BASE_SIZES.statsValue * fs }}>
+										{song.calories ?? "—"}
+									</div>
+								</div>
+								<div className="text-center">
+									<div className="opacity-60 uppercase tracking-wide">Time</div>
+									<div className="tabular-nums" style={{ fontSize: BASE_SIZES.statsValue * fs }}>
+										{formatDuration(song.durationSeconds)}
+									</div>
+								</div>
+							</div>
+						)}
+					</div>
+				)}
 			</div>
-
-			{config.showGrade && (
-				<div className="flex flex-col items-center gap-px shrink-0">
-					<span
-						className={`inline-flex items-center justify-center px-1 py-px rounded font-bold tabular-nums ${gradeClassName}`}
-						style={{ fontSize: BASE_SIZES.gradeLabel * fs, minWidth: 28 * fs }}
-					>
-						{gradeLabel}
-					</span>
-					{song.score && (
-						<span className="opacity-70 tabular-nums" style={{ fontSize: BASE_SIZES.gradeScore * fs }}>
-							{song.score}%
-						</span>
-					)}
-				</div>
-			)}
-
-			{config.showStats && (
-				<div className="flex items-center shrink-0" style={{ gap: 6 * fs, fontSize: BASE_SIZES.statsLabel * fs }}>
-					<div className="text-center">
-						<div className="opacity-60 uppercase tracking-wide">HR</div>
-						<div className="tabular-nums" style={{ fontSize: BASE_SIZES.statsValue * fs }}>
-							{song.avgHr ?? "—"}
-						</div>
-					</div>
-					<div className="text-center">
-						<div className="opacity-60 uppercase tracking-wide">Max</div>
-						<div className="tabular-nums" style={{ fontSize: BASE_SIZES.statsValue * fs }}>
-							{song.maxHr ?? "—"}
-						</div>
-					</div>
-					<div className="text-center">
-						<div className="opacity-60 uppercase tracking-wide">Cal</div>
-						<div className="tabular-nums" style={{ fontSize: BASE_SIZES.statsValue * fs }}>
-							{song.calories ?? "—"}
-						</div>
-					</div>
-					<div className="text-center">
-						<div className="opacity-60 uppercase tracking-wide">Time</div>
-						<div className="tabular-nums" style={{ fontSize: BASE_SIZES.statsValue * fs }}>
-							{formatDuration(song.durationSeconds)}
-						</div>
-					</div>
-				</div>
-			)}
 		</div>
 	);
 }
@@ -265,6 +272,15 @@ function SongTickerOBSComponent() {
 	const config = parseQueryConfig();
 	const { connect, addCustomEventListener, isConnected, isConnecting, error } = useOBS();
 	const [recentSongs, setRecentSongs] = useState<BroadcastSongEntry[]>([]);
+
+	// Marks the moment this ticker instance came up (i.e. whenever OBS
+	// (re)loads this browser source -- new stream, restarted OBS, refreshed
+	// cache, etc). The Electron app broadcasts its whole in-memory recent-
+	// songs backlog on every push, which would otherwise make a fresh OBS
+	// session immediately show songs left over from a previous session.
+	// Filtering anything older than this timestamp means the ticker starts
+	// empty and only fills in as songs are actually played *this* session.
+	const sessionStartRef = useRef<number>(Math.floor(Date.now() / 1000));
 
 	useEffect(() => {
 		if (!pwd) return;
@@ -276,13 +292,16 @@ function SongTickerOBSComponent() {
 			try {
 				const payload = (eventData || {}) as ObsPayload;
 				if (!Array.isArray(payload.recentSongs)) return;
-				setRecentSongs(payload.recentSongs);
+				const currentSessionSongs = config.sessionReset
+					? payload.recentSongs.filter((s) => s.startTime >= sessionStartRef.current)
+					: payload.recentSongs;
+				setRecentSongs(currentSessionSongs);
 			} catch {
 				// ignore malformed events
 			}
 		});
 		return unmount;
-	}, [addCustomEventListener]);
+	}, [addCustomEventListener, config.sessionReset]);
 
 	const items = useSongTicker(recentSongs, config.count, config.fadeMs);
 

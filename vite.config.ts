@@ -36,12 +36,39 @@ export default defineConfig({
 		tailwindcss(),
 		VitePWA({
 			registerType: "autoUpdate",
-			injectRegister: "auto",
+			// Was "auto" -- that injects the SW registration script into
+			// EVERY html entry Vite processes, including the obs/*/index.html
+			// overlay pages, not just the main app. Those pages have no
+			// business being offline-cached: a Service Worker registered
+			// against http://127.0.0.1:<port> keeps serving whatever
+			// JS/HTML/PNGs were live the first time OBS loaded that page,
+			// indefinitely -- that cache lives in the browser engine's own
+			// storage for that origin, not the app's install directory, so
+			// reinstalling the app can't clear it. Setting this to false and
+			// manually registering only from the main app's own entry file
+			// (see the note below) stops the obs pages from ever requesting
+			// a Service Worker in the first place.
+			injectRegister: false,
 			devOptions: {
 				enabled: true,
 			},
 			workbox: {
-				navigateFallbackDenylist: [/^\/api/, /^\/ws/],
+				navigateFallbackDenylist: [
+					/^\/api/,
+					/^\/ws/,
+					/^\/obs\//,
+					/^\/hearts\//,
+					/^\/graph\//,
+					/^\/sensors\//,
+					/^\/heartrate\//,
+					/^\/songs\//,
+					/^\/pad\//,
+				],
+				// Keep the obs pages' own bundles and the heart preset
+				// images out of the precache manifest entirely, so even a
+				// freshly-generated sw.js can't precache stale copies of
+				// them for anyone who does end up on an obs/* URL somehow.
+				globIgnores: ["**/obs/**", "**/hearts/**"],
 			},
 			includeAssets: [
 				"favicon.ico",
@@ -101,6 +128,7 @@ export default defineConfig({
 				obsSensors: path.resolve(__dirname, "obs/sensors/index.html"),
 				obsHeartrate: path.resolve(__dirname, "obs/heartrate/index.html"),
 				obsSongs: path.resolve(__dirname, "obs/songs/index.html"),
+				obsPad: path.resolve(__dirname, "obs/pad/index.html"),
 			},
 		},
 	},

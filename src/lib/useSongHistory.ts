@@ -64,6 +64,12 @@ interface SongHistoryBridge {
 	getFolder: () => Promise<string | null>;
 	selectInstallFolder: () => Promise<string | null>;
 	getInstallFolder: () => Promise<string | null>;
+	// Additional Songs/ folders (e.g. other drives) to also search when
+	// resolving banner images -- on top of the single install folder
+	// above. See main.cjs's getAllBannerRoots()/media server.
+	addBannerFolder: () => Promise<string[]>;
+	removeBannerFolder: (folder: string) => Promise<string[]>;
+	getBannerFolders: () => Promise<string[]>;
 	getAllSongs: () => Promise<SongLogEntry[]>;
 	deleteEntries: (startTimes: number[]) => Promise<SongLogEntry[]>;
 	onSongLogUpdate: (callback: (entries: SongLogEntry[]) => void) => () => void;
@@ -84,6 +90,7 @@ export function useSongHistory() {
 	const [hrSamples, setHrSamples] = useState<HeartrateSample[]>([]);
 	const [folder, setFolder] = useState<string | null>(null);
 	const [installFolder, setInstallFolder] = useState<string | null>(null);
+	const [bannerFolders, setBannerFolders] = useState<string[]>([]);
 	const [mediaBaseUrl, setMediaBaseUrl] = useState<string | null>(null);
 	const [isSupported] = useState(() => typeof window !== "undefined" && !!window.songHistoryBridge);
 	const lastSampleAtRef = useRef<number>(0);
@@ -95,9 +102,10 @@ export function useSongHistory() {
 		let cancelled = false;
 
 		(async () => {
-			const [savedFolder, savedInstallFolder, initialSongs, initialSamples, baseUrl] = await Promise.all([
+			const [savedFolder, savedInstallFolder, savedBannerFolders, initialSongs, initialSamples, baseUrl] = await Promise.all([
 				bridge.getFolder(),
 				bridge.getInstallFolder(),
+				bridge.getBannerFolders(),
 				bridge.getAllSongs(),
 				bridge.getAllHeartrateSamples(),
 				bridge.getMediaBaseUrl(),
@@ -105,6 +113,7 @@ export function useSongHistory() {
 			if (cancelled) return;
 			setFolder(savedFolder);
 			setInstallFolder(savedInstallFolder);
+			setBannerFolders(savedBannerFolders);
 			setSongs(initialSongs);
 			setHrSamples(initialSamples);
 			setMediaBaseUrl(baseUrl);
@@ -133,6 +142,23 @@ export function useSongHistory() {
 		if (!bridge) return;
 		const path = await bridge.selectInstallFolder();
 		setInstallFolder(path);
+	}, []);
+
+	// Opens a folder picker (supports selecting multiple folders at once)
+	// to add extra Songs/ locations -- e.g. other drives -- that banners
+	// should also be searched under, on top of the main install folder.
+	const addBannerFolder = useCallback(async () => {
+		const bridge = window.songHistoryBridge;
+		if (!bridge) return;
+		const updated = await bridge.addBannerFolder();
+		setBannerFolders(updated);
+	}, []);
+
+	const removeBannerFolder = useCallback(async (folder: string) => {
+		const bridge = window.songHistoryBridge;
+		if (!bridge) return;
+		const updated = await bridge.removeBannerFolder(folder);
+		setBannerFolders(updated);
 	}, []);
 
 	// Deletes one or more local history entries by startTime (epoch
@@ -165,10 +191,13 @@ export function useSongHistory() {
 		hrSamples,
 		folder,
 		installFolder,
+		bannerFolders,
 		mediaBaseUrl,
 		isSupported,
 		selectFolder,
 		selectInstallFolder,
+		addBannerFolder,
+		removeBannerFolder,
 		recordHeartrateSample,
 		deleteEntries,
 	};
