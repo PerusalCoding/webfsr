@@ -1,10 +1,74 @@
 import { Minus, Plus } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 
 // Maximum value possible from sensors
 const maxSensorVal = 1023;
+
+// UI scale published by a resizable parent (see ResizableSensorPanel in the
+// dashboard). 1 = original size. Everything drawn on the canvas (value /
+// threshold text, line widths) and the +/- control row multiplies by it, so
+// resizing the panel keeps text and controls proportional and aligned.
+// A numeric `uiScale` prop on SensorBar overrides the context.
+const SensorUiScaleContext = createContext<number>(1);
+
+// Hold-to-repeat for the +/- buttons. Pointer-down fires one step right away
+// (so a quick tap still moves exactly 1), then after HOLD_DELAY_MS keeps
+// stepping while held, speeding up the longer it's held:
+//   ticks  0-7 : every 90ms, step 1
+//   ticks  8-24: every 45ms, step 1
+//   ticks 25+  : every 30ms, step 5   (for crossing the 0-1023 range quickly)
+// Releasing, cancelling, or losing pointer capture stops it. Keyboard
+// activation (Enter/Space) still works through onClick (detail === 0).
+const HOLD_DELAY_MS = 350;
+function useHoldRepeat(step: (amount: number, dir: 1 | -1) => void, dir: 1 | -1, disabled: boolean) {
+	const stepRef = useRef(step);
+	stepRef.current = step;
+	const timerRef = useRef<number | null>(null);
+
+	const stop = useCallback(() => {
+		if (timerRef.current !== null) {
+			window.clearTimeout(timerRef.current);
+			timerRef.current = null;
+		}
+	}, []);
+	useEffect(() => stop, [stop]);
+	useEffect(() => { if (disabled) stop(); }, [disabled, stop]);
+
+	const start = useCallback(() => {
+		stop();
+		stepRef.current(1, dir);
+		let ticks = 0;
+		const tick = () => {
+			const amount = ticks >= 25 ? 5 : 1;
+			const interval = ticks >= 25 ? 30 : ticks >= 8 ? 45 : 90;
+			stepRef.current(amount, dir);
+			ticks++;
+			timerRef.current = window.setTimeout(tick, interval);
+		};
+		timerRef.current = window.setTimeout(tick, HOLD_DELAY_MS);
+	}, [dir, stop]);
+
+	return {
+		onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => {
+			if (disabled || e.button !== 0) return;
+			e.currentTarget.setPointerCapture(e.pointerId);
+			start();
+		},
+		onPointerUp: (e: React.PointerEvent<HTMLButtonElement>) => {
+			stop();
+			if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+		},
+		onPointerCancel: stop,
+		onLostPointerCapture: stop,
+		// Mouse/touch already handled on pointer-down; only react to keyboard clicks here.
+		onClick: (e: React.MouseEvent<HTMLButtonElement>) => {
+			if (disabled || e.detail !== 0) return;
+			stepRef.current(1, dir);
+		},
+	};
+}
 
 interface SensorBarProps {
 	value: number;
@@ -45,6 +109,8 @@ interface SensorBarProps {
 	// (the original single-line behavior), even if secondaryThreshold
 	// is being displayed for reference.
 	onSecondaryThresholdChange?: (index: number, value: number) => void;
+	// Optional explicit UI scale (overrides SensorUiScaleContext).
+	uiScale?: number;
 }
 
 // Component for individual sensor bar
@@ -77,7 +143,10 @@ const SensorBar = ({
 	secondaryThresholdLabel = "Release",
 	secondaryThresholdColor = "rgba(0, 200, 120, 0.9)",
 	onSecondaryThresholdChange,
+	uiScale,
 }: SensorBarProps) => {
+	const ctxScale = useContext(SensorUiScaleContext);
+	const s = uiScale ?? ctxScale;
 	const isDarkMode = theme === "dark";
 	const defaultBgColor = backgroundColor || (isDarkMode ? "#171717" : "white");
 	const resolvedLabelColor = labelTextColor ?? labelColor;
@@ -202,27 +271,34 @@ const SensorBar = ({
 		}
 	};
 
-	const handleIncrement = () => {
+	// Latest values kept in refs and updated on every step, so rapid repeats
+	// never act on a stale prop between re-renders.
+	const thresholdRef = useRef(threshold);
+	thresholdRef.current = threshold;
+	const secondaryRef = useRef(secondaryThreshold);
+	secondaryRef.current = secondaryThreshold;
+
+	const stepPrimary = (amount: number, dir: 1 | -1) => {
 		if (isLocked) return;
-		const newValue = Math.min(threshold + 1, maxValue);
-		onThresholdChange(index, newValue);
+		const next = Math.max(0, Math.min(maxValue, thresholdRef.current + dir * amount));
+		if (next === thresholdRef.current) return;
+		thresholdRef.current = next;
+		onThresholdChange(index, next);
 	};
 
-	const handleDecrement = () => {
-		if (isLocked) return;
-		const newValue = Math.max(threshold - 1, 0);
-		onThresholdChange(index, newValue);
+	const stepSecondary = (amount: number, dir: 1 | -1) => {
+		const cur = secondaryRef.current;
+		if (isLocked || !onSecondaryThresholdChange || cur === undefined) return;
+		const next = Math.max(0, Math.min(maxValue, cur + dir * amount));
+		if (next === cur) return;
+		secondaryRef.current = next;
+		onSecondaryThresholdChange(index, next);
 	};
 
-	const handleSecondaryIncrement = () => {
-		if (isLocked || !onSecondaryThresholdChange || secondaryThreshold === undefined) return;
-		onSecondaryThresholdChange(index, Math.min(secondaryThreshold + 1, maxValue));
-	};
-
-	const handleSecondaryDecrement = () => {
-		if (isLocked || !onSecondaryThresholdChange || secondaryThreshold === undefined) return;
-		onSecondaryThresholdChange(index, Math.max(secondaryThreshold - 1, 0));
-	};
+	const decHold = useHoldRepeat(stepPrimary, -1, isLocked);
+	const incHold = useHoldRepeat(stepPrimary, 1, isLocked);
+	const secDecHold = useHoldRepeat(stepSecondary, -1, isLocked);
+	const secIncHold = useHoldRepeat(stepSecondary, 1, isLocked);
 
 	useEffect(() => {
 		const onMouseMove = (e: MouseEvent) => {
@@ -343,7 +419,7 @@ const SensorBar = ({
 		ctx.moveTo(0, thresholdY);
 		ctx.lineTo(width, thresholdY);
 		ctx.strokeStyle = "rgba(255, 0, 0, 0.8)";
-		ctx.lineWidth = 2;
+		ctx.lineWidth = 2 * s;
 		ctx.stroke();
 
 		// Draw secondary (Release / OFF) threshold line if provided. Dashed
@@ -354,11 +430,11 @@ const SensorBar = ({
 		if (secondaryThreshold !== undefined) {
 			secondaryThresholdY = Math.round(height - (secondaryThreshold / maxValue) * height);
 			ctx.beginPath();
-			ctx.setLineDash([5, 4]);
+			ctx.setLineDash([5 * s, 4 * s]);
 			ctx.moveTo(0, secondaryThresholdY);
 			ctx.lineTo(width, secondaryThresholdY);
 			ctx.strokeStyle = secondaryThresholdColor;
-			ctx.lineWidth = 2;
+			ctx.lineWidth = 2 * s;
 			ctx.stroke();
 			ctx.setLineDash([]); // reset so it doesn't leak into other strokes
 		}
@@ -371,13 +447,13 @@ const SensorBar = ({
 		// Draw value text
 		if (showValueText) {
 			ctx.fillStyle = resolvedValueTextColor;
-			ctx.font = `${valueTextSize}px sans-serif`;
+			ctx.font = `${valueTextSize * s}px sans-serif`;
 			ctx.textAlign = "center";
 			ctx.textBaseline = "top";
 
 			// Position text at integer coordinates
 			const valueTextX = Math.floor(width / 2);
-			const valueTextY = 4;
+			const valueTextY = Math.round(4 * s);
 
 			ctx.fillText(value.toString(), valueTextX, valueTextY);
 		}
@@ -385,13 +461,13 @@ const SensorBar = ({
 		// Draw threshold value text
 		if (showThresholdText) {
 			ctx.fillStyle = resolvedThresholdTextColor;
-			ctx.font = `${thresholdTextSize}px sans-serif`;
+			ctx.font = `${thresholdTextSize * s}px sans-serif`;
 			ctx.textAlign = "center";
 			ctx.textBaseline = "bottom";
 
 			// Position text at integer coordinates
 			const thresholdTextX = Math.floor(width / 2);
-			const thresholdTextY = thresholdY - 2;
+			const thresholdTextY = thresholdY - Math.round(2 * s);
 
 			ctx.fillText(`${threshold}`, thresholdTextX, thresholdTextY);
 		}
@@ -401,9 +477,9 @@ const SensorBar = ({
 		// together (a common case right when someone starts narrowing the
 		// gap back down).
 		if (showThresholdText && secondaryThresholdY !== null && secondaryThreshold !== undefined) {
-			const labelsCollide = Math.abs(secondaryThresholdY - thresholdY) < thresholdTextSize + 4;
+			const labelsCollide = Math.abs(secondaryThresholdY - thresholdY) < (thresholdTextSize + 4) * s;
 			ctx.fillStyle = secondaryThresholdColor;
-			ctx.font = `${thresholdTextSize}px sans-serif`;
+			ctx.font = `${thresholdTextSize * s}px sans-serif`;
 			ctx.textAlign = "center";
 			// If close to the main line, push the label to the opposite
 			// side (top vs bottom) of its own line so the two labels don't
@@ -413,8 +489,8 @@ const SensorBar = ({
 				: "bottom";
 			const secondaryTextX = Math.floor(width / 2);
 			const secondaryTextY = labelsCollide
-				? secondaryThresholdY + (secondaryThresholdY > thresholdY ? 2 : -2)
-				: secondaryThresholdY - 2;
+				? secondaryThresholdY + (secondaryThresholdY > thresholdY ? 1 : -1) * Math.round(2 * s)
+				: secondaryThresholdY - Math.round(2 * s);
 			ctx.fillText(`${secondaryThresholdLabel}: ${secondaryThreshold}`, secondaryTextX, secondaryTextY);
 		}
 	}, [
@@ -436,14 +512,15 @@ const SensorBar = ({
 		secondaryThreshold,
 		secondaryThresholdLabel,
 		secondaryThresholdColor,
+		s,
 	]);
 
 	return (
-		<div className="flex flex-col items-center select-none h-full px-4" ref={containerRef}>
+		<div className="flex flex-col items-center select-none h-full min-h-0 min-w-0 px-4" ref={containerRef}>
 			{!hideLabel && (
 				<div
-					className="font-medium mb-1 text-center leading-tight"
-					style={{ color: resolvedLabelColor, fontSize: `${labelTextSize}px` }}
+					className="font-medium text-center leading-tight"
+					style={{ color: resolvedLabelColor, fontSize: `${labelTextSize * s}px`, marginBottom: `${4 * s}px` }}
 				>
 					{label}
 				</div>
@@ -461,10 +538,15 @@ const SensorBar = ({
 			  `flex-1` alone is enough to fill the available space correctly
 			  once the parent's height is established.
 			*/}
-			<div className={`relative flex-1 w-full flex flex-col ${!hideControls ? "mb-2" : ""} canvas-container`}>
+			{/* The canvas is absolutely positioned and this wrapper clips it, so the
+			    canvas's own pixel size (set from the ResizeObserver below) can
+			    never act as this wrapper's minimum height. Before this, the
+			    canvas kept the bar from shrinking when its parent got shorter
+			    (flex min-height:auto), pushing the controls out of view. */}
+			<div className={`relative flex-1 min-h-8 min-w-0 w-full flex flex-col overflow-hidden canvas-container`} style={!hideControls ? { marginBottom: `${8 * s}px` } : undefined}>
 				<canvas
 					ref={canvasRef}
-					className={`border border-border rounded w-full h-full ${isLocked ? "cursor-not-allowed" : "cursor-pointer"}`}
+					className={`absolute inset-0 border border-border rounded w-full h-full ${isLocked ? "cursor-not-allowed" : "cursor-pointer"}`}
 					style={{ backgroundColor: defaultBgColor }}
 					aria-label={label}
 					onMouseDown={handleMouseDown}
@@ -472,22 +554,22 @@ const SensorBar = ({
 				/>
 			</div>
 			{!hideControls && (
-				<div className="flex items-center gap-1.5 w-full justify-center">
+				<div className="flex items-center w-full justify-center" style={{ gap: `${6 * s}px` }}>
 					{/* Trigger (primary) controls -- colored red to match
 					    the solid red line on the bar when dual-line mode
 					    is active (secondaryThreshold provided). In casual
 					    single-line mode this just looks like the original
 					    neutral control row. */}
-					<div className="flex items-center gap-0.5">
+					<div className="flex items-center" style={{ gap: `${2 * s}px` }}>
 						<Button
 							variant="link"
 							size="icon"
-							className="size-6 shrink-0 p-0 hover:cursor-pointer"
-							onClick={handleDecrement}
+							className="shrink-0 p-0 hover:cursor-pointer touch-none" style={{ width: `${24 * s}px`, height: `${24 * s}px` }}
+							{...decHold}
 							disabled={isLocked}
 							aria-label="Decrease threshold"
 						>
-							<Minus className={`size-3 ${secondaryThreshold !== undefined ? "text-red-500" : ""}`} />
+							<Minus className={secondaryThreshold !== undefined ? "text-red-500" : ""} style={{ width: `${12 * s}px`, height: `${12 * s}px` }} />
 						</Button>
 						<Input
 							type="text"
@@ -498,19 +580,19 @@ const SensorBar = ({
 								if (e.key === "Enter") validateAndUpdateThreshold();
 							}}
 							disabled={isLocked}
-							className={`h-6 text-xs text-center px-0.5 w-12 min-w-12 shadow-none rounded-sm ${secondaryThreshold !== undefined ? "border-red-500/60 text-red-500 focus-visible:ring-red-500/40" : ""}`}
+							className={`text-center px-0.5 shadow-none rounded-sm ${secondaryThreshold !== undefined ? "border-red-500/60 text-red-500 focus-visible:ring-red-500/40" : ""}`} style={{ height: `${24 * s}px`, width: `${48 * s}px`, minWidth: `${48 * s}px`, fontSize: `${12 * s}px` }}
 							aria-label={`Trigger threshold value for ${label}`}
 							title="Trigger (ON)"
 						/>
 						<Button
 							variant="link"
 							size="icon"
-							className="size-6 shrink-0 p-0 hover:cursor-pointer"
-							onClick={handleIncrement}
+							className="shrink-0 p-0 hover:cursor-pointer touch-none" style={{ width: `${24 * s}px`, height: `${24 * s}px` }}
+							{...incHold}
 							disabled={isLocked}
 							aria-label="Increase threshold"
 						>
-							<Plus className={`size-3 ${secondaryThreshold !== undefined ? "text-red-500" : ""}`} />
+							<Plus className={secondaryThreshold !== undefined ? "text-red-500" : ""} style={{ width: `${12 * s}px`, height: `${12 * s}px` }} />
 						</Button>
 					</div>
 
@@ -518,16 +600,16 @@ const SensorBar = ({
 					    dual-line mode is active. Colored green to match
 					    the dashed green Release line on the bar. */}
 					{secondaryThreshold !== undefined && onSecondaryThresholdChange && (
-						<div className="flex items-center gap-0.5">
+						<div className="flex items-center" style={{ gap: `${2 * s}px` }}>
 							<Button
 								variant="link"
 								size="icon"
-								className="size-6 shrink-0 p-0 hover:cursor-pointer"
-								onClick={handleSecondaryDecrement}
+								className="shrink-0 p-0 hover:cursor-pointer touch-none" style={{ width: `${24 * s}px`, height: `${24 * s}px` }}
+								{...secDecHold}
 								disabled={isLocked}
 								aria-label="Decrease release threshold"
 							>
-								<Minus className="size-3 text-green-500" />
+								<Minus className="text-green-500" style={{ width: `${12 * s}px`, height: `${12 * s}px` }} />
 							</Button>
 							<Input
 								type="text"
@@ -538,19 +620,19 @@ const SensorBar = ({
 									if (e.key === "Enter") validateAndUpdateSecondaryThreshold();
 								}}
 								disabled={isLocked}
-								className="h-6 text-xs text-center px-0.5 w-12 min-w-12 shadow-none rounded-sm border-green-500/60 text-green-500 focus-visible:ring-green-500/40"
+								className="text-center px-0.5 shadow-none rounded-sm border-green-500/60 text-green-500 focus-visible:ring-green-500/40" style={{ height: `${24 * s}px`, width: `${48 * s}px`, minWidth: `${48 * s}px`, fontSize: `${12 * s}px` }}
 								aria-label={`Release threshold value for ${label}`}
 								title="Release (OFF)"
 							/>
 							<Button
 								variant="link"
 								size="icon"
-								className="size-6 shrink-0 p-0 hover:cursor-pointer"
-								onClick={handleSecondaryIncrement}
+								className="shrink-0 p-0 hover:cursor-pointer touch-none" style={{ width: `${24 * s}px`, height: `${24 * s}px` }}
+								{...secIncHold}
 								disabled={isLocked}
 								aria-label="Increase release threshold"
 							>
-								<Plus className="size-3 text-green-500" />
+								<Plus className="text-green-500" style={{ width: `${12 * s}px`, height: `${12 * s}px` }} />
 							</Button>
 						</div>
 					)}
@@ -561,4 +643,4 @@ const SensorBar = ({
 };
 
 export default SensorBar;
-export { maxSensorVal };
+export { maxSensorVal, SensorUiScaleContext };

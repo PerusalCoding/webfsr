@@ -1,5 +1,5 @@
 import { AlertTriangle, Download, GripVertical, Heart, Moon, RefreshCw, Share, Smartphone, Sun, Unplug, Upload } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { memo, type PointerEvent as ReactPointerEvent, type ReactNode, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
 	AboutDialog,
 	GeneralSettingsSection,
@@ -11,7 +11,7 @@ import {
 import MobileDashboard from "~/components/MobileDashboard";
 import { OBSComponentDialog } from "~/components/OBSComponentDialog";
 import PairingQRModal from "~/components/PairingQRModal";
-import SensorBar from "~/components/SensorBar";
+import SensorBar, { SensorUiScaleContext } from "~/components/SensorBar";
 import { SongHistorySection } from "~/components/SongHistorySection";
 import TimeSeriesGraph from "~/components/TimeSeriesGraph";
 import UpdateModal from "~/components/UpdateModal";
@@ -147,20 +147,13 @@ const MOCK_SENSOR_LABELS = Array.from({ length: MOCK_SENSOR_COUNT }, (_, i) => `
 // shift between renders -- left position, size, duration, and delay are
 // all varied by hand for an organic, non-mechanical rise.
 const AURA_PARTICLES: { left: string; size: number; duration: number; delay: number; color: "primary" | "accent" }[] = [
-	{ left: "4%",  size: 3, duration: 3.2, delay: 0,    color: "primary" },
-	{ left: "13%", size: 2, duration: 3.7, delay: 1.9,  color: "accent"  },
-	{ left: "20%", size: 2, duration: 3.8, delay: 0.5,  color: "accent"  },
-	{ left: "28%", size: 3, duration: 3.5, delay: 2.3,  color: "primary" },
-	{ left: "35%", size: 3, duration: 3.4, delay: 1.1,  color: "primary" },
-	{ left: "43%", size: 2, duration: 4.1, delay: 2.7,  color: "accent"  },
-	{ left: "50%", size: 2, duration: 4.0, delay: 0.2,  color: "accent"  },
-	{ left: "58%", size: 3, duration: 3.3, delay: 1.7,  color: "primary" },
-	{ left: "65%", size: 3, duration: 3.6, delay: 1.6,  color: "primary" },
-	{ left: "72%", size: 2, duration: 3.9, delay: 0.4,  color: "accent"  },
-	{ left: "80%", size: 2, duration: 3.3, delay: 0.8,  color: "accent"  },
-	{ left: "87%", size: 3, duration: 3.7, delay: 2.1,  color: "primary" },
-	{ left: "94%", size: 3, duration: 3.9, delay: 1.3,  color: "primary" },
-	{ left: "99%", size: 2, duration: 3.5, delay: 2.5,  color: "accent"  },
+	{ left: "6%",  size: 3, duration: 3.2, delay: 0,   color: "primary" },
+	{ left: "20%", size: 2, duration: 3.8, delay: 0.5, color: "accent"  },
+	{ left: "35%", size: 3, duration: 3.4, delay: 1.1, color: "primary" },
+	{ left: "50%", size: 2, duration: 4.0, delay: 0.2, color: "accent"  },
+	{ left: "65%", size: 3, duration: 3.6, delay: 1.6, color: "primary" },
+	{ left: "80%", size: 2, duration: 3.3, delay: 0.8, color: "accent"  },
+	{ left: "94%", size: 3, duration: 3.9, delay: 1.3, color: "primary" },
 ];
 
 function generateMockTimeSeriesData(timeWindow: number): Array<Array<{ value: number; timestamp: number }>> {
@@ -190,6 +183,7 @@ function generateMockTimeSeriesData(timeWindow: number): Array<Array<{ value: nu
 
 const LS_CUSTOM_PRESETS_KEY = "webfsr_led_presets_v5";
 const LS_SENSOR_MAP_KEY     = "webfsr_led_sensors_v5";
+const LS_ACCENT_ZONE_KEY    = "webfsr_led_accent_v1";
 
 // One entry per FSR sensor — fully flexible, no hardcoded directions
 interface SensorZone {
@@ -206,11 +200,109 @@ interface LedPreset {
 	brightness: number;
 }
 
+// A NON-sensor decorative LED zone -- e.g. under the cap / around the
+// controller enclosure. Unlike SensorZone, this never reacts to an FSR
+// reading; it just runs a firmware-side animation over its own LED range
+// (defaults to starting right after the sensor zones, offset 32+, so it
+// doesn't overlap the panel strips by default). Effects are computed on
+// the Teensy itself (not by the dashboard pushing rapid color updates)
+// so the cap keeps animating even when the dashboard isn't connected --
+// only the CONFIG (effect, speed, color, range) is sent over serial.
+type AccentEffect = "off" | "solid" | "rainbow" | "pulse" | "chase";
+
+interface AccentZone {
+	label: string;
+	effect: AccentEffect;
+	color: string;      // base color for solid/pulse/chase; ignored by rainbow
+	speed: number;       // 1-255, effect speed (higher = faster)
+	ledCount: number;
+	ledOffset: number;   // defaults to 32 -- right after a typical 8-sensor/32-LED panel layout
+}
+
+const DEFAULT_ACCENT_ZONE: AccentZone = {
+	label: "Cap",
+	effect: "off",
+	color: "#00ddcc",
+	speed: 60,
+	ledCount: 12,
+	ledOffset: 32,
+};
+
+// Both the accent zone and every sensor's LED zone write into the SAME
+// physical leds[] array on the board (LedZoneOn/LedZoneOff for sensors,
+// AccentRenderNow() for the accent zone) -- nothing in the firmware
+// prevents their offset/count ranges from overlapping. If they do, a
+// sensor press will visibly steal/overwrite the accent zone's LEDs for
+// as long as it's held (LedZoneOn writes the sensor's color over
+// whatever was there), and worse, releasing it can leave those LEDs
+// stuck black afterward for Solid/Off (which only repaint on a config
+// change, not continuously) until the accent zone is next touched.
+// Checked live in the UI so this shows up as a warning instead of a
+// confusing "why does my cap flash when I step" bug report.
+function findAccentOverlap(accent: AccentZone, sensors: SensorZone[]): SensorZone[] {
+	const aStart = accent.ledOffset;
+	const aEnd = accent.ledOffset + accent.ledCount;
+	return sensors.filter((s) => {
+		const sStart = s.ledOffset;
+		const sEnd = s.ledOffset + s.ledCount;
+		return sStart < aEnd && aStart < sEnd;
+	});
+}
+
+// Same sharing problem, but between two SENSORS' own zones rather than a
+// sensor and the accent zone -- just as easy to end up with (hand-edited
+// offsets, a preset applied on top of custom zones, etc.) and just as
+// invisible: the strip preview below picks whichever sensor comes first
+// in the array as a given LED's "owner" with no indication a second
+// sensor also claims it, so two panels can be silently fighting over the
+// same physical LEDs -- each press overwriting whatever the other one
+// last set -- and nothing in the UI would show it. Returns one entry per
+// conflicting PAIR (not per sensor), each with the specific LED range
+// they share.
+function findSensorZoneOverlaps(sensors: SensorZone[]): { a: SensorZone; b: SensorZone; from: number; to: number }[] {
+	const conflicts: { a: SensorZone; b: SensorZone; from: number; to: number }[] = [];
+	for (let i = 0; i < sensors.length; i++) {
+		for (let j = i + 1; j < sensors.length; j++) {
+			const a = sensors[i], b = sensors[j];
+			const from = Math.max(a.ledOffset, b.ledOffset);
+			const to = Math.min(a.ledOffset + a.ledCount, b.ledOffset + b.ledCount);
+			if (from < to) conflicts.push({ a, b, from, to: to - 1 });
+		}
+	}
+	return conflicts;
+}
+
+const ACCENT_EFFECT_LABELS: Record<AccentEffect, string> = {
+	off: "Off",
+	solid: "Solid",
+	rainbow: "Rainbow Cycle",
+	pulse: "Pulse / Glow",
+	chase: "Chase",
+};
+
+// Module-scope (not component-local) so both LedSection (sending live
+// config) and FirmwareUpdateSection (replaying a backup) can encode/decode
+// the same "a" command without duplicating the mapping.
+const ACCENT_EFFECT_TO_NUM: Record<AccentEffect, number> = { off: 0, solid: 1, rainbow: 2, pulse: 3, chase: 4 };
+const ACCENT_EFFECT_BY_NUM: AccentEffect[] = ["off", "solid", "rainbow", "pulse", "chase"];
+
+function loadAccentZone(): AccentZone {
+	try {
+		const raw = localStorage.getItem(LS_ACCENT_ZONE_KEY);
+		return raw ? { ...DEFAULT_ACCENT_ZONE, ...(JSON.parse(raw) as Partial<AccentZone>) } : { ...DEFAULT_ACCENT_ZONE };
+	} catch { return { ...DEFAULT_ACCENT_ZONE }; }
+}
+function saveAccentZone(z: AccentZone) {
+	localStorage.setItem(LS_ACCENT_ZONE_KEY, JSON.stringify(z));
+}
+
 // Bridge shape returned by LedSection's _getLedControls() -- powers the
 // LED Pad Preview tab.
 interface LedControls {
 	sensors: SensorZone[];
 	updateSensor: (i: number, patch: Partial<SensorZone>) => void;
+	accent: AccentZone;
+	updateAccent: (patch: Partial<AccentZone>) => void;
 }
 
 const DEFAULT_COLORS = [
@@ -277,6 +369,217 @@ function hexToRgb(hex: string) {
 	return { r: parseInt(c.slice(0,2),16), g: parseInt(c.slice(2,4),16), b: parseInt(c.slice(4,6),16) };
 }
 
+/*===========================================================================*/
+// ACCENT EFFECT PREVIEW MATH -- a client-side mirror of the exact firmware
+// math in AccentRenderRainbow/Pulse/Chase (Fsr_Awaken_Animus_Master_V5.ino)
+// so the dashboard can show a live animated demo of an effect/color BEFORE
+// (or without) a pad connected. This is ONLY ever used to drive pixels in
+// the UI -- never sent over serial -- so it's fine for it to be a JS
+// reimplementation rather than sharing code with the firmware; what matters
+// is the two stay visually equivalent (same hue-step/brightness-ramp/
+// comet-tail formulas, same phase-per-step advance), not byte-identical.
+
+// speed 1 (slow) -> ~120ms/step, speed 255 (fast) -> ~20ms/step -- matches
+// AccentStepIntervalMs() in firmware exactly (floor raised from an
+// earlier 4ms so this preview's cadence matches the real, gameplay-safe
+// cadence the board now runs at -- see that function's own comment for
+// why the floor exists).
+function accentStepIntervalMs(speed: number): number {
+	return Math.max(20, Math.min(120, 124 - Math.floor(speed / 2)));
+}
+
+// FastLED-style CHSV (each channel 0-255, hue wraps at 256) -> hex, since
+// that's the exact hue space AccentRenderRainbow() computes in on the
+// Teensy (NOT the usual 0-360 degree HSV) -- using the same 0-255 space
+// here means the preview's rainbow sweep lines up with the real one
+// instead of just looking similar.
+function chsvToHex(h255: number, s255: number, v255: number): string {
+	const h = ((h255 % 256) + 256) % 256 / 255 * 360;
+	const s = s255 / 255;
+	const v = v255 / 255;
+	const c = v * s;
+	const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+	const m = v - c;
+	let r = 0, g = 0, b = 0;
+	if (h < 60) [r, g, b] = [c, x, 0];
+	else if (h < 120) [r, g, b] = [x, c, 0];
+	else if (h < 180) [r, g, b] = [0, c, x];
+	else if (h < 240) [r, g, b] = [0, x, c];
+	else if (h < 300) [r, g, b] = [x, 0, c];
+	else [r, g, b] = [c, 0, x];
+	const toHex = (v: number) => Math.round(Math.max(0, Math.min(255, (v + m) * 255))).toString(16).padStart(2, "0");
+	return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+// Mirrors FastLED's nscale8_video -- linear scale toward black, matching
+// AccentRenderPulse()/AccentRenderChase()'s CRGB::nscale8_video() calls.
+function scaleHex(hex: string, factor0to255: number): string {
+	const { r, g, b } = hexToRgb(hex);
+	const f = Math.max(0, Math.min(255, factor0to255)) / 255;
+	const toHex = (v: number) => Math.round(v * f).toString(16).padStart(2, "0");
+	return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+// One animation frame's worth of per-LED hex colors for an AccentZone at a
+// given phase -- same phase/step semantics as the firmware's accentPhase
+// (increments by 1 every accentStepIntervalMs(speed)).
+function computeAccentFrame(accent: AccentZone, phase: number): string[] {
+	const n = Math.max(1, accent.ledCount);
+	if (accent.effect === "off") return Array(n).fill("#1a1a1a"); // dim gray, not pure black -- stays visible as "off but present" in the UI
+	if (accent.effect === "solid") return Array(n).fill(accent.color);
+	if (accent.effect === "rainbow") {
+		const hueStep = 256 / n;
+		return Array.from({ length: n }, (_, i) => chsvToHex(phase + i * hueStep, 255, 255));
+	}
+	if (accent.effect === "pulse") {
+		const t = phase % 512;
+		const brightness = t < 256 ? t : 511 - t;
+		return Array(n).fill(scaleHex(accent.color, brightness));
+	}
+	// chase
+	const head = phase % n;
+	const tailLen = Math.min(3, n);
+	const colors = Array(n).fill("#1a1a1a");
+	for (let tail = 0; tail < tailLen; tail++) {
+		let pos = head - tail;
+		if (pos < 0) pos += n;
+		colors[pos] = scaleHex(accent.color, 255 - tail * 85);
+	}
+	return colors;
+}
+
+// Runs the requestAnimationFrame loop and returns the current frame's
+// per-LED colors -- shared by every place that wants to preview the
+// accent zone (sidebar section, both edit cards, the pad's Cap node).
+// Restarts phase at 0 whenever the config that affects the animation's
+// shape changes, so e.g. switching effects doesn't pick up mid-cycle.
+function useAccentPreviewFrame(accent: AccentZone): string[] {
+	const [frame, setFrame] = useState<string[]>(() => computeAccentFrame(accent, 0));
+	const phaseRef = useRef(0);
+	const lastStepRef = useRef<number>(0);
+
+	useEffect(() => {
+		phaseRef.current = 0;
+		lastStepRef.current = 0;
+
+		// Off and Solid are static outputs with nothing to animate -- render
+		// them once here and skip the rAF loop entirely. Previously both
+		// effects still ran through the same tick loop below, gated only by
+		// the Speed-derived interval, so Solid kept calling setFrame with a
+		// freshly-built (but value-identical) array on every step -- the
+		// constant re-render was visible as a faint pulse, and tied its
+		// rate to the Speed slider even though a static color has no
+		// "speed" to speak of.
+		if (accent.effect === "off" || accent.effect === "solid") {
+			setFrame(computeAccentFrame(accent, 0));
+			return;
+		}
+
+		let rafId: number;
+		const tick = (t: number) => {
+			if (lastStepRef.current === 0) lastStepRef.current = t;
+			if (t - lastStepRef.current >= accentStepIntervalMs(accent.speed)) {
+				lastStepRef.current = t;
+				phaseRef.current += 1;
+				setFrame(computeAccentFrame(accent, phaseRef.current));
+			}
+			rafId = requestAnimationFrame(tick);
+		};
+		rafId = requestAnimationFrame(tick);
+		return () => cancelAnimationFrame(rafId);
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally
+		// keyed on the fields that change the animation's SHAPE (effect/speed/
+		// color/count), not on `accent` as a whole -- editing the label or
+		// offset shouldn't restart the phase/cycle.
+	}, [accent.effect, accent.speed, accent.color, accent.ledCount]);
+
+	return frame;
+}
+
+// A row of small LED-square previews driven by useAccentPreviewFrame --
+// used in the sidebar Accent LEDs section and both edit cards. `size` in
+// px; `max` caps how many squares are drawn (the Cap node on the pad image
+// is small, so it only wants a handful even if ledCount is larger).
+function AccentPreviewStrip({ accent, size = 16, max }: { accent: AccentZone; size?: number; max?: number }) {
+	const frame = useAccentPreviewFrame(accent);
+	const shown = typeof max === "number" ? frame.slice(0, max) : frame;
+	return (
+		<div className="flex gap-0.5 flex-wrap">
+			{shown.map((color, i) => (
+				<div
+					key={i}
+					className="rounded-sm border border-white/20 shrink-0"
+					style={{
+						width: size,
+						height: size,
+						background: color,
+						boxShadow: accent.effect !== "off" ? `0 0 4px ${color}` : undefined,
+					}}
+				/>
+			))}
+			{max && frame.length > max && (
+				<span className="text-[9px] text-muted-foreground self-center">+{frame.length - max}</span>
+			)}
+		</div>
+	);
+}
+// Walks the PERIMETER of a square, clockwise from the top-left corner --
+// t in [0,1) maps to a point on the rim. Used to lay LEDs out like they're
+// actually mounted around the edge of a cap/case, not paving its whole
+// surface.
+function perimeterPosition(t: number): { xPct: number; yPct: number } {
+	const frac = ((t % 1) + 1) % 1;
+	if (frac < 0.25) return { xPct: (frac / 0.25) * 100, yPct: 0 };
+	if (frac < 0.5) return { xPct: 100, yPct: ((frac - 0.25) / 0.25) * 100 };
+	if (frac < 0.75) return { xPct: 100 - ((frac - 0.5) / 0.25) * 100, yPct: 100 };
+	return { xPct: 0, yPct: 100 - ((frac - 0.75) / 0.25) * 100 };
+}
+
+// Renders `count` LEDs strung evenly around the rim of its container (like
+// the green selection outline around the Cap panel), each animated from
+// the same rainbow/pulse/chase math as the firmware -- rainbow becomes a
+// color ring, chase becomes a light literally circling the edge, pulse
+// breathes the whole ring. A filled grid of squares was tried first but
+// read as "tacky"/like random dots changing color rather than a coherent
+// LED strip; tracing the rim is both more attractive and closer to how
+// these LEDs would actually be mounted on the hardware. Runs its OWN
+// independent animation loop (via a locally-scoped AccentZone with
+// ledCount swapped for `count`), so this can be dropped in anywhere a
+// live demo is wanted without wiring shared state through props.
+function AccentRimDemo({ accent, cellSize = 10, count = 20 }: { accent: AccentZone; cellSize?: number; count?: number }) {
+	const demoAccent = useMemo(
+		() => ({ ...accent, ledCount: count }),
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- only the
+		// fields that actually change the animation's shape/color matter
+		// here; rebuilding this object on every accent change (e.g. label
+		// edits) would restart the animation pointlessly.
+		[accent.effect, accent.speed, accent.color, count],
+	);
+	const frame = useAccentPreviewFrame(demoAccent);
+	return (
+		<div className="absolute inset-0">
+			{frame.map((c, i) => {
+				const { xPct, yPct } = perimeterPosition(i / frame.length);
+				return (
+					<div
+						key={i}
+						className="absolute rounded-sm"
+						style={{
+							width: cellSize,
+							height: cellSize,
+							left: `${xPct}%`,
+							top: `${yPct}%`,
+							transform: "translate(-50%, -50%)",
+							background: c,
+							boxShadow: accent.effect !== "off" ? `0 0 ${Math.max(3, cellSize * 0.7)}px ${c}` : undefined,
+						}}
+					/>
+				);
+			})}
+		</div>
+	);
+}
+
 function loadSensors(): SensorZone[] {
 	try {
 		const raw = localStorage.getItem(LS_SENSOR_MAP_KEY);
@@ -317,12 +620,17 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition, nu
 	const [customPresets, setCustomPresets] = useState<LedPreset[]>(loadCustomPresets);
 	const [newPresetName, setNewPresetName] = useState<string>("");
 	const [showSaveInput, setShowSaveInput] = useState<boolean>(false);
+	const [accentOpen, setAccentOpen]   = useState<boolean>(false);
+	const [accent, setAccent]           = useState<AccentZone>(loadAccentZone);
 	const ledDrag = useRowDragReorder(moveDisplayPosition);
 
 	// Publish to the external store consumed by LedPadPreview (LEDs tab).
 	useEffect(() => {
 		publishLedStore(sensors);
 	}, [sensors]);
+	useEffect(() => {
+		publishAccentStore(accent);
+	}, [accent]);
 
 	// Query firmware on connect. We deliberately do NOT push our locally
 	// cached `sensors` back to the firmware here -- doing so used to race
@@ -338,6 +646,12 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition, nu
 			setTimeout(() => {
 				sendText("q\n");
 			}, 400);
+			// Query the accent zone config too ("a" with no args = query,
+			// mirroring "q" for sensor zones). Sent slightly after "q" so
+			// the two responses don't land in the same serial write burst.
+			setTimeout(() => {
+				sendText("a\n");
+			}, 460);
 		}
 		if (!connected) hasQueriedRef.current = false;
 	}, [connected, sendText]);
@@ -393,6 +707,30 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition, nu
 		return true;
 	};
 
+	// Parse firmware "a <offset> <count> <effect> <speed> <r> <g> <b>"
+	// response for the accent/cap zone (see sendAccentConfig below for the
+	// matching outbound format). Effect is sent as a number so it's a
+	// single byte over serial like everything else here:
+	//   0=off 1=solid 2=rainbow 3=pulse 4=chase
+	const handleAccentLine = (line: string) => {
+		if (!line.startsWith("a ")) return false;
+		const nums = line.slice(2).trim().split(/\s+/).map(Number);
+		if (nums.length < 7) return false;
+		const [offset, count, effectNum, speed, r, g, b] = nums;
+		const hex = "#" + [r, g, b].map((v) => (v || 0).toString(16).padStart(2, "0")).join("");
+		const next: AccentZone = {
+			label: accent.label,
+			ledOffset: offset,
+			ledCount: count,
+			effect: ACCENT_EFFECT_BY_NUM[effectNum] ?? "off",
+			speed,
+			color: hex,
+		};
+		setAccent(next);
+		saveAccentZone(next);
+		return true;
+	};
+
 	const sendColor = (i: number, hex: string) => {
 		if (!connected) return;
 		const { r, g, b } = hexToRgb(hex);
@@ -407,6 +745,15 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition, nu
 		sendText(`b ${val}\n`);
 	};
 
+	// Sends the full accent config in one shot -- firmware runs the actual
+	// rainbow/pulse/chase animation itself off this, so the cap keeps
+	// animating on its own timer even when nothing is connected/redrawing.
+	const sendAccentConfig = (z: AccentZone) => {
+		if (!connected) return;
+		const { r, g, b } = hexToRgb(z.color);
+		sendText(`a ${z.ledOffset} ${z.ledCount} ${ACCENT_EFFECT_TO_NUM[z.effect]} ${z.speed} ${r} ${g} ${b}\n`);
+	};
+
 	const updateSensor = (i: number, patch: Partial<SensorZone>) => {
 		const updated = sensors.map((s, idx) => idx === i ? { ...s, ...patch } : s);
 		setSensors(updated);
@@ -415,6 +762,17 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition, nu
 		// Always use s.sensorIndex (not i) so firmware gets the correct sensor
 		if ("color" in patch || "sensorIndex" in patch) sendColor(s.sensorIndex, s.color);
 		if ("ledOffset" in patch || "ledCount" in patch || "sensorIndex" in patch) sendZone(s.sensorIndex, s.ledOffset, s.ledCount);
+	};
+
+	// `label` is dashboard-only (never sent to firmware -- see
+	// sendAccentConfig), so patching just the label skips the serial write
+	// entirely rather than sending a no-op config line.
+	const updateAccent = (patch: Partial<AccentZone>) => {
+		const updated = { ...accent, ...patch };
+		setAccent(updated);
+		saveAccentZone(updated);
+		const onlyLabelChanged = Object.keys(patch).every((k) => k === "label");
+		if (!onlyLabelChanged) sendAccentConfig(updated);
 	};
 
 	// Tell firmware how many sensors are active. Firmware auto-assigns
@@ -552,15 +910,21 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition, nu
 		saveCustomPresets(updated);
 	};
 
-	(LedSection as unknown as { _handleLine: (l: string) => boolean })._handleLine = handleLedLine;
+	// Try the accent line first -- both start with a single letter + space
+	// ("a " vs "c ") so there's no ambiguity, but ordering doesn't matter
+	// here since each parser bails out immediately on a prefix mismatch.
+	(LedSection as unknown as { _handleLine: (l: string) => boolean })._handleLine =
+		(line: string) => handleAccentLine(line) || handleLedLine(line);
 	// Lets FirmwareUpdateSection read current LED zones + brightness for
 	// a backup, same reasoning as SensorTuningSection's _getSnapshot above.
-	(LedSection as unknown as { _getSnapshot: () => { sensors: SensorZone[]; brightness: number } })._getSnapshot =
-		() => ({ sensors, brightness });
+	// Accent zone included too, so a backup/profile export captures the
+	// cap's effect config, not just the per-sensor panel LEDs.
+	(LedSection as unknown as { _getSnapshot: () => { sensors: SensorZone[]; brightness: number; accent: AccentZone } })._getSnapshot =
+		() => ({ sensors, brightness, accent });
 	// Lets the LED Pad Preview tab read current zones/colors AND push
 	// changes back -- see the matching comment in the personal/dev build.
 	(LedSection as unknown as { _getLedControls: () => LedControls })._getLedControls =
-		() => ({ sensors, updateSensor });
+		() => ({ sensors, updateSensor, accent, updateAccent });
 
 	const totalLeds = Math.max(16, ...sensors.map(s => s.ledOffset + s.ledCount));
 
@@ -690,22 +1054,52 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition, nu
 									Offset = first LED on the strip (0-based). Count = how many LEDs to light.
 								</p>
 
-								{/* Strip preview */}
+								{/* Strip preview -- a conflicted LED (claimed by more than one
+								    sensor) gets a red hatched marker instead of silently
+								    showing whichever sensor happens to come first in the
+								    array, which is what the previous version did: it looked
+								    identical to a normal, unshared LED even when two panels
+								    were actually fighting over it. */}
 								<div className="flex gap-0.5 flex-wrap">
 									{Array.from({ length: totalLeds }, (_, li) => {
-										const owner = sensors.findIndex(s => li >= s.ledOffset && li < s.ledOffset + s.ledCount);
+										const owners = sensors.filter(s => li >= s.ledOffset && li < s.ledOffset + s.ledCount);
+										const conflicted = owners.length > 1;
 										return (
 											<div
 												key={li}
-												className="w-4 h-4 rounded-sm border border-border flex items-center justify-center"
-												style={{ background: owner >= 0 ? sensors[owner].color : "transparent" }}
-												title={`LED ${li}${owner >= 0 ? ` → ${sensors[owner].label}` : ""}`}
+												className={`w-4 h-4 rounded-sm border flex items-center justify-center ${conflicted ? "border-red-500 ring-1 ring-red-500" : "border-border"}`}
+												style={{
+													background: conflicted
+														? "repeating-linear-gradient(45deg, #ef4444, #ef4444 2px, #1a1a1a 2px, #1a1a1a 4px)"
+														: owners[0]?.color ?? "transparent",
+												}}
+												title={
+													conflicted
+														? `LED ${li} -- CONFLICT: claimed by ${owners.map(o => o.label).join(" + ")}`
+														: `LED ${li}${owners[0] ? ` → ${owners[0].label}` : ""}`
+												}
 											>
 												<span className="text-[8px] text-white/60 font-mono leading-none">{li}</span>
 											</div>
 										);
 									})}
 								</div>
+
+								{(() => {
+									const conflicts = findSensorZoneOverlaps(sensors);
+									if (conflicts.length === 0) return null;
+									return (
+										<div className="flex flex-col gap-0.5">
+											{conflicts.map((c, idx) => (
+												<p key={idx} className="text-[10px] text-red-500">
+													⚠ {c.a.label} and {c.b.label} both claim LED{c.from === c.to ? "" : "s"} {c.from}
+													{c.from !== c.to ? `-${c.to}` : ""} -- each press overwrites
+													whatever the other one last set there.
+												</p>
+											))}
+										</div>
+									);
+								})()}
 
 								{/* Zone inputs */}
 								<div className="flex flex-col gap-1.5">
@@ -731,6 +1125,157 @@ function LedSection({ connected, sendText, displayOrder, moveDisplayPosition, nu
 										</div>
 									))}
 								</div>
+							</div>
+						)}
+					</div>
+
+					{/* Accent / Cap LEDs -- a decorative, non-sensor zone (e.g. under
+					    the cap/controller enclosure). Runs its own firmware-side
+					    animation instead of reacting to an FSR, so it keeps
+					    animating even without the dashboard connected -- only the
+					    config (effect/speed/color/range) is pushed over serial. */}
+					<div className="flex flex-col gap-1 border border-border rounded p-2">
+						<button
+							className="flex items-center justify-between w-full text-left"
+							onClick={() => setAccentOpen(o => !o)}
+						>
+							<span className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-medium uppercase tracking-wide">
+								<AccentPreviewStrip accent={accent} size={8} max={1} />
+								Accent LEDs ({accent.label})
+							</span>
+							<span className="text-xs text-muted-foreground">{accentOpen ? "▲" : "▼"}</span>
+						</button>
+
+						{accentOpen && (
+							<div className="mt-2 flex flex-col gap-2">
+								<p className="text-[11px] text-muted-foreground">
+									A decorative zone not tied to any FSR sensor -- e.g. LEDs
+									under the cap or around the controller. Runs its own
+									animation on the board itself.
+								</p>
+
+								<div className="flex items-center gap-2">
+									<input
+										type="text"
+										value={accent.label}
+										maxLength={16}
+										className="flex-1 text-xs bg-transparent border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring min-w-0"
+										onChange={(e) => updateAccent({ label: e.target.value })}
+										placeholder="Cap"
+									/>
+									{/* Hidden for Rainbow -- that effect cycles through every
+									    hue on its own (including red) and never reads
+									    accent.color at all, so leaving this swatch active while
+									    Rainbow is selected made it look like picking a color
+									    (e.g. purple) was randomly "turning red" -- really you
+									    were just watching the rainbow cycle pass through red on
+									    its way around, same as any other hue. The edit card
+									    opened from the LEDs tab already hid this correctly; this
+									    sidebar copy hadn't matched it until now. */}
+									{accent.effect !== "rainbow" && (
+										<div
+											className="w-7 h-7 rounded-md border border-border shrink-0 cursor-pointer relative overflow-hidden"
+											style={{ background: accent.color }}
+										>
+											<input
+												type="color"
+												value={accent.color}
+												className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+												onChange={(e) => updateAccent({ color: e.target.value })}
+											/>
+										</div>
+									)}
+								</div>
+								{accent.effect === "rainbow" && (
+									<p className="text-[10px] text-muted-foreground -mt-1">
+										Rainbow cycles through every color on its own -- there's no
+										single color to set while it's selected.
+									</p>
+								)}
+
+								{/* Live demo -- fills a square with an animated grid (not a
+								    thin row of dots) so the effect visibly happens across a
+								    shape, same math the firmware runs. */}
+								<div className="flex flex-col gap-1 p-1.5 rounded border border-border bg-muted/10">
+									<span className="text-[9px] text-muted-foreground uppercase tracking-wide">Live demo</span>
+									<div className="relative w-full aspect-square max-w-[140px] mx-auto rounded overflow-hidden border border-border/60">
+										<AccentRimDemo accent={accent} cellSize={8} count={20} />
+									</div>
+								</div>
+
+								<div className="grid grid-cols-2 gap-1.5">
+									{(Object.keys(ACCENT_EFFECT_LABELS) as AccentEffect[]).map((fx) => (
+										<button
+											key={fx}
+											onClick={() => updateAccent({ effect: fx })}
+											className={`text-xs py-1 rounded border transition-colors ${
+												accent.effect === fx
+													? "bg-foreground text-background border-foreground"
+													: "bg-transparent text-muted-foreground border-border hover:text-foreground"
+											}`}
+										>
+											{ACCENT_EFFECT_LABELS[fx]}
+										</button>
+									))}
+								</div>
+
+								{accent.effect !== "off" && accent.effect !== "rainbow" && accent.effect !== "solid" && (
+									<p className="text-[10px] text-muted-foreground -mt-1">Uses the color swatch above.</p>
+								)}
+
+								{/* Speed has no meaning for a static color -- hidden for Solid
+								    too (it never actually did anything to it; see
+								    useAccentPreviewFrame's fix for why it looked like it was). */}
+								{accent.effect !== "off" && accent.effect !== "solid" && (
+									<div className="flex flex-col gap-1">
+										<div className="flex items-center justify-between">
+											<label className="text-[10px] text-muted-foreground uppercase tracking-wide">Speed</label>
+											<span className="text-xs font-mono text-muted-foreground">{accent.speed}</span>
+										</div>
+										<input
+											type="range" min={1} max={255} step={1} value={accent.speed}
+											className="w-full h-1.5 accent-foreground cursor-pointer"
+											onChange={(e) => setAccent(a => ({ ...a, speed: Number(e.target.value) }))}
+											onMouseUp={(e) => updateAccent({ speed: Number((e.target as HTMLInputElement).value) })}
+											onTouchEnd={(e) => updateAccent({ speed: Number((e.target as HTMLInputElement).value) })}
+										/>
+									</div>
+								)}
+
+								<div className="grid grid-cols-[1fr_2.5rem_2.5rem] gap-1 items-center">
+									<span className="text-[10px] text-muted-foreground uppercase tracking-wide">Range</span>
+									<input
+										type="number" min={0} max={255} value={accent.ledOffset}
+										title="LED Offset -- first LED in this zone"
+										className="text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring text-center"
+										onChange={(e) => { const v = parseInt(e.target.value); if (!isNaN(v)) updateAccent({ ledOffset: Math.max(0, Math.min(255, v)) }); }}
+									/>
+									<input
+										type="number" min={1} max={64} value={accent.ledCount}
+										title="LED Count"
+										className="text-xs font-mono bg-transparent border border-border rounded px-1 py-0.5 w-full focus:outline-none focus:ring-1 focus:ring-ring text-center"
+										onChange={(e) => { const v = parseInt(e.target.value); if (!isNaN(v)) updateAccent({ ledCount: Math.max(1, Math.min(64, v)) }); }}
+									/>
+								</div>
+								<p className="text-[10px] text-muted-foreground">
+									Offset/Count are just LED indices on the same strip -- keep
+									them outside your sensor panels' ranges (defaults to 32+)
+									so the two don't overlap.
+								</p>
+								{(() => {
+									const overlapping = findAccentOverlap(accent, sensors);
+									if (overlapping.length === 0) return null;
+									return (
+										<p className="text-[10px] text-amber-500">
+											⚠ Overlaps {overlapping.map((s) => s.label).join(", ")}'s LED
+											range -- pressing {overlapping.length > 1 ? "those sensors" : "that sensor"} will
+											steal these LEDs while held, and they may stay black after
+											release until this zone is touched again. Move this Offset
+											past LED {Math.max(...overlapping.map((s) => s.ledOffset + s.ledCount))} or
+											move {overlapping.length > 1 ? "their" : "its"} zone to fix.
+										</p>
+									);
+								})()}
 							</div>
 						)}
 					</div>
@@ -949,6 +1494,23 @@ function getLedStoreSnapshot() {
 	return ledStoreSnapshot;
 }
 
+// ── Accent zone external store ── same pattern/reasoning as the LED
+// sensor store just above -- LedPadPreview needs its own subscription to
+// the accent zone so it re-renders live as it's edited from the sidebar.
+let accentStoreSnapshot: AccentZone = { ...DEFAULT_ACCENT_ZONE };
+const accentStoreListeners = new Set<() => void>();
+function publishAccentStore(next: AccentZone) {
+	accentStoreSnapshot = next;
+	accentStoreListeners.forEach((l) => l());
+}
+function subscribeAccentStore(callback: () => void) {
+	accentStoreListeners.add(callback);
+	return () => accentStoreListeners.delete(callback);
+}
+function getAccentStoreSnapshot() {
+	return accentStoreSnapshot;
+}
+
 function loadTuning(count: number, deviceId: string | null): SensorTuning[] {
 	try {
 		const raw = localStorage.getItem(scopedKey(LS_TUNING_KEY, deviceId));
@@ -1076,7 +1638,9 @@ function SensorTuningSection({
 	useEffect(() => {
 		if (numSensors > 0 && numSensors !== tuning.length) {
 			const next = Array.from({ length: numSensors }, (_, i) =>
-				tuning[i] ?? { trigger: 700, release: 300, gainX100: 100, buttonGroup: i, releaseDebounceMs: 15 }
+				tuning[i] ?? {
+					trigger: 700, release: 300, gainX100: 100, buttonGroup: i, releaseDebounceMs: 15,
+				}
 			);
 			setTuning(next);
 			saveTuning(next, deviceId);
@@ -1086,10 +1650,8 @@ function SensorTuningSection({
 	// Parse "p <sensor> <trigger> <release> <gain> <buttonGroup>
 	//        <releaseDebounceMs> <liveValue>"
 	// responses from the firmware so the UI reflects what's actually saved
-	// on the pad. Tolerates older firmware sending fewer fields (a
-	// not-yet-reflashed pad, or extra dev-build-only fields at the end
-	// from a personal/test firmware -- harmless, just ignored here since
-	// the public build doesn't have a UI for them).
+	// on the pad. Tolerates older firmware sending fewer fields, so this
+	// doesn't break against a not-yet-reflashed pad.
 	const handleTuningLine = (line: string) => {
 		if (!line.startsWith("p ")) return false;
 		const nums = line.slice(2).trim().split(/\s+/).map(Number);
@@ -1156,17 +1718,17 @@ function SensorTuningSection({
 	return (
 		// The old collapsible "Sensor Tuning" sidebar panel (Advanced mode
 		// toggle, per-sensor Trigger/Release cards, gap warning, quick
-		// presets) has been removed -- it duplicated controls that now live
-		// on the main page (the "Sensor Tuning: On/Off" toggle, the bar's
-		// Trigger/Release lines, the Release readout + reset, and the
-		// always-visible Gain/Debounce/Button Group mini controls). Only
-		// "Sync Sensor Tuning from Pad" was unique to this panel, so that's
-		// what's kept here -- renamed from the old "Sync from pad" label so
-		// it's not visually identical to LedSection's own (different) sync
-		// button. All of this component's actual state/logic (tuning,
-		// firmware "p" line parsing, the _handleLine/_getSnapshot/
-		// _getControls bridges) is untouched -- only the old duplicate UI
-		// is gone.
+		// presets) has been removed -- it
+		// duplicated controls that now live on the main page (the "Sensor
+		// Tuning: On/Off" toggle, the bar's Trigger/Release lines, the
+		// Release readout + reset, and the always-visible Gain/Debounce/
+		// Button Group mini controls). Only "Sync Sensor
+		// Tuning from Pad" was unique to this panel, so that's what's kept
+		// here -- renamed from the old "Sync from pad" label so it's not
+		// visually identical to LedSection's own (different) sync button.
+		// All of this component's actual state/logic (tuning, firmware "p"
+		// line parsing, the _handleLine/_getSnapshot/_getControls bridges)
+		// is untouched -- only the old duplicate UI is gone.
 		<Button
 			variant="outline"
 			size="sm"
@@ -1252,7 +1814,7 @@ interface BackupFile {
 	firmwareVersion: string;     // version running WHEN this backup was taken
 	eepromSchema: string;
 	sensors: SensorTuning[];
-	led: { sensors: SensorZone[]; brightness: number };
+	led: { sensors: SensorZone[]; brightness: number; accent?: AccentZone };
 }
 
 interface FirmwareUpdateSectionProps {
@@ -1378,7 +1940,7 @@ function FirmwareUpdateSection({ connected, sendText, connect, disconnect, onDev
 	// board, not a fresh serial round-trip.
 	const gatherBackup = (): BackupFile | null => {
 		const tuningSnapshot = (SensorTuningSection as unknown as { _getSnapshot?: () => SensorTuning[] })._getSnapshot?.();
-		const ledSnapshot = (LedSection as unknown as { _getSnapshot?: () => { sensors: SensorZone[]; brightness: number } })._getSnapshot?.();
+		const ledSnapshot = (LedSection as unknown as { _getSnapshot?: () => { sensors: SensorZone[]; brightness: number; accent: AccentZone } })._getSnapshot?.();
 		if (!tuningSnapshot || !ledSnapshot) return null;
 		return {
 			kind: "webfsr-backup",
@@ -1433,6 +1995,13 @@ function FirmwareUpdateSection({ connected, sendText, connect, disconnect, onDev
 			setTimeout(() => sendText(`z ${s.sensorIndex} ${s.ledOffset} ${s.ledCount}\n`), delay += step);
 		});
 		setTimeout(() => sendText(`b ${backup.led.brightness}\n`), delay += step);
+		// Accent/cap zone -- optional field, so backups taken before this
+		// feature existed just skip this step and leave the cap as-is.
+		if (backup.led.accent) {
+			const az = backup.led.accent;
+			const { r, g, b } = hexToRgb(az.color);
+			setTimeout(() => sendText(`a ${az.ledOffset} ${az.ledCount} ${ACCENT_EFFECT_TO_NUM[az.effect]} ${az.speed} ${r} ${g} ${b}\n`), delay += step);
+		}
 		setTimeout(() => setRestoreStatus(`Restored ${backup.sensors.length} sensor(s) from backup taken ${new Date(backup.savedAt).toLocaleString()}.`), delay += step);
 	};
 
@@ -1546,9 +2115,10 @@ function FirmwareUpdateSection({ connected, sendText, connect, disconnect, onDev
 							<AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
 							<p className="text-[11px] text-amber-700 dark:text-amber-400">
 								<strong>This update will reset your sensor calibration</strong> (Trigger,
-								Release, Gain, Button Group, Release Debounce, LED colors/zones) back to
-								defaults. Back up your settings below first -- Update Now stays disabled
-								until you do, and restoring afterward happens automatically.
+								Release, Gain, Button Group, Release Debounce, LED
+								colors/zones) back to defaults. Back up your settings below first --
+								Update Now stays disabled until you do, and restoring afterward happens
+								automatically.
 							</p>
 						</div>
 					)}
@@ -1637,6 +2207,208 @@ function FirmwareUpdateSection({ connected, sendText, connect, disconnect, onDev
 }
 
 /*=============================================================================
+ COMMIT NUMBER INPUT -- small typed-value box that sits next to a slider.
+ Keeps a local text draft while the user types (so partial entries like "1."
+ or an empty box aren't clobbered by the live value), then clamps + commits
+ on Enter or blur. Escape reverts. Re-syncs from `value` whenever it changes
+ externally (slider drag, reset button, firmware echo) and the box isn't focused.
+=============================================================================*/
+function CommitNumberInput({
+	value, min, max, step = 1, decimals = 0, scale = 1, onCommit, className = "", title,
+}: {
+	value: number;          // raw stored value (e.g. gainX100)
+	min: number;            // in DISPLAY units
+	max: number;            // in DISPLAY units
+	step?: number;
+	decimals?: number;
+	scale?: number;         // stored = display * scale (gain: 100)
+	onCommit: (raw: number) => void;
+	className?: string;
+	title?: string;
+}) {
+	const toDisplay = (v: number) => (v / scale).toFixed(decimals);
+	const [draft, setDraft] = useState<string>(() => toDisplay(value));
+	const focusedRef = useRef(false);
+
+	useEffect(() => {
+		if (!focusedRef.current) setDraft(toDisplay(value));
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [value]);
+
+	const commit = () => {
+		const n = parseFloat(draft);
+		if (!Number.isFinite(n)) { setDraft(toDisplay(value)); return; }
+		const clamped = Math.min(max, Math.max(min, n));
+		const raw = Math.round(clamped * scale);
+		setDraft(toDisplay(raw));
+		if (raw !== value) onCommit(raw);
+	};
+
+	return (
+		<input
+			type="number" inputMode="decimal" min={min} max={max} step={step}
+			value={draft} title={title}
+			className={`w-[calc(48px*var(--sensor-ui-scale))] text-[length:calc(9px*var(--sensor-ui-scale))] font-mono bg-transparent border border-border rounded px-1 py-0.5 text-right focus:outline-none focus:ring-1 focus:ring-ring ${className}`}
+			onFocus={(e) => { focusedRef.current = true; e.currentTarget.select(); }}
+			onChange={(e) => setDraft(e.target.value)}
+			onBlur={() => { focusedRef.current = false; commit(); }}
+			onKeyDown={(e) => {
+				if (e.key === "Enter") { e.currentTarget.blur(); }
+				else if (e.key === "Escape") { setDraft(toDisplay(value)); e.currentTarget.blur(); }
+			}}
+		/>
+	);
+}
+
+/*=============================================================================
+ RESIZABLE GRAPH PANEL -- wraps the wave-signal graph with a drag handle on
+ its top edge so it can be made shorter/taller instead of always eating all
+ leftover vertical space. Height is persisted in localStorage.
+=============================================================================*/
+const LS_GRAPH_HEIGHT_KEY = "webfsr_public_graph_height";
+const GRAPH_MIN_H = 120;
+const GRAPH_MAX_H = 1400;
+const GRAPH_DEFAULT_H = 320;
+
+// Shared drag logic for the bottom-edge resize handles. `height` is the
+// PREFERRED height (what the user dragged to / what is persisted). The panel
+// is laid out with flex-basis = preferred and flex-shrink enabled, so when the
+// window is smaller the panel collapses toward its min height on its own and
+// grows back to the preferred height when space returns -- the preferred
+// value itself is never overwritten by window changes. Drag math starts from
+// the panel's ACTUAL rendered height so the handle tracks the pointer even
+// when the panel is currently shrunk below its preferred size.
+function useVerticalResize(storageKey: string, defaultH: number, minH: number, maxH: number) {
+	const [height, setHeight] = useState<number>(() => {
+		try {
+			const n = Number(localStorage.getItem(storageKey));
+			return Number.isFinite(n) && n >= minH ? Math.min(maxH, n) : defaultH;
+		} catch { return defaultH; }
+	});
+	const elRef = useRef<HTMLDivElement>(null);
+	const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+	const heightRef = useRef(height);
+	heightRef.current = height;
+
+	const persist = (h: number) => { try { localStorage.setItem(storageKey, String(Math.round(h))); } catch { /* ignore */ } };
+
+	const handleProps = {
+		onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => {
+			const actual = elRef.current?.getBoundingClientRect().height ?? heightRef.current;
+			dragRef.current = { startY: e.clientY, startH: actual };
+			setHeight(actual);
+			e.currentTarget.setPointerCapture(e.pointerId);
+		},
+		onPointerMove: (e: ReactPointerEvent<HTMLDivElement>) => {
+			if (!dragRef.current) return;
+			const next = dragRef.current.startH + (e.clientY - dragRef.current.startY);
+			setHeight(Math.min(maxH, Math.max(minH, next)));
+		},
+		onPointerUp: (e: ReactPointerEvent<HTMLDivElement>) => {
+			if (!dragRef.current) return;
+			dragRef.current = null;
+			if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+			persist(heightRef.current);
+		},
+		onPointerCancel: () => { dragRef.current = null; },
+		onDoubleClick: () => { setHeight(defaultH); persist(defaultH); },
+	};
+	return { height, elRef, handleProps };
+}
+
+function ResizeGrip({ title, ...rest }: { title: string } & ReturnType<typeof useVerticalResize>["handleProps"]) {
+	return (
+		<div
+			role="separator" aria-orientation="horizontal" title={title}
+			className="h-2 shrink-0 cursor-row-resize flex items-center justify-center group touch-none"
+			{...rest}
+		>
+			<div className="h-0.5 w-12 rounded bg-border group-hover:bg-foreground/60 transition-colors" />
+		</div>
+	);
+}
+
+function ResizableGraphPanel({ children }: { children: ReactNode }) {
+	const { height, elRef, handleProps } = useVerticalResize(LS_GRAPH_HEIGHT_KEY, GRAPH_DEFAULT_H, GRAPH_MIN_H, GRAPH_MAX_H);
+	return (
+		<div
+			ref={elRef}
+			className="mt-2 flex flex-col min-w-0 overflow-hidden"
+			// flex-basis = preferred height; may shrink down to GRAPH_MIN_H
+			// when the window is short, never grows past the preferred size.
+			style={{ flex: `0 1 ${height}px`, minHeight: GRAPH_MIN_H }}
+		>
+			<div className="p-1 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm grow min-h-0 min-w-0 overflow-hidden">
+				<div className="h-full w-full min-w-0">{children}</div>
+			</div>
+			<ResizeGrip title="Drag to resize graph (double-click to reset)" {...handleProps} />
+		</div>
+	);
+}
+
+/*=============================================================================
+ RESIZABLE SENSOR PANEL -- wraps the sensor bars (+ heart-rate box) so the
+ whole block can be resized by dragging its bottom edge. While resizing it
+ publishes a scale (derived from BOTH its height and the width available
+ per sensor column) as a `--sensor-ui-scale` CSS variable (mini-controls,
+ Release row, fixed-height slots) AND via SensorUiScaleContext (SensorBar's
+ canvas text, lines and +/- row) so fonts, icons, inputs and slots scale together,
+ so nothing clips, overlaps or drifts out of alignment at any size.
+=============================================================================*/
+const LS_SENSOR_PANEL_HEIGHT_KEY = "webfsr_public_sensor_panel_height";
+const SENSOR_PANEL_DEFAULT_H = 450;
+const SENSOR_PANEL_MIN_H = 300;
+const SENSOR_PANEL_MAX_H = 1400;
+const SENSOR_REF_COL_W = 190;  // column width (px) at which scale == 1
+const SENSOR_MIN_COL_W = 116;  // below this per-column width the grid scrolls sideways instead of crushing
+const SENSOR_SCALE_MIN = 0.6;
+const SENSOR_SCALE_MAX = 1.6;
+
+function ResizableSensorPanel({
+	numSensors, reservedWidth = 0, children,
+}: { numSensors: number; reservedWidth?: number; children: ReactNode }) {
+	const { height, elRef, handleProps } = useVerticalResize(
+		LS_SENSOR_PANEL_HEIGHT_KEY, SENSOR_PANEL_DEFAULT_H, SENSOR_PANEL_MIN_H, SENSOR_PANEL_MAX_H,
+	);
+	// Actual rendered size -- the scale follows what is really on screen
+	// (which can be smaller than the preferred height when the window is
+	// short), not the stored preference.
+	const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+	useEffect(() => {
+		const el = elRef.current;
+		if (!el || typeof ResizeObserver === "undefined") return;
+		const ro = new ResizeObserver((entries) => {
+			const r = entries[0].contentRect;
+			setSize((prev) => (Math.abs(prev.w - r.width) < 1 && Math.abs(prev.h - r.height) < 1 ? prev : { w: r.width, h: r.height }));
+		});
+		ro.observe(el);
+		return () => ro.disconnect();
+	}, [elRef]);
+
+	// The heart-rate box takes at most 30% of the width (see its classes).
+	const reserved = Math.min(reservedWidth, size.w * 0.3);
+	const colW = Math.max(1, (size.w - reserved) / Math.max(1, numSensors));
+	const hScale = (size.h > 0 ? size.h : height) / SENSOR_PANEL_DEFAULT_H;
+	const wScale = size.w > 0 ? colW / SENSOR_REF_COL_W : Infinity;
+	const scale = Math.min(SENSOR_SCALE_MAX, Math.max(SENSOR_SCALE_MIN, Math.min(hScale, wScale)));
+
+	return (
+		<div
+			ref={elRef}
+			className="sensor-scale-root flex flex-col min-w-0"
+			// Preferred height as flex-basis; shrinks to the minimum when the
+			// window is short, grows back when space returns.
+			style={{ flex: `0 1 ${height}px`, minHeight: SENSOR_PANEL_MIN_H, ["--sensor-ui-scale" as string]: scale.toFixed(3) }}
+		>
+			<SensorUiScaleContext.Provider value={scale}>
+				<div className="flex gap-2 flex-1 min-h-0 min-w-0">{children}</div>
+			</SensorUiScaleContext.Provider>
+			<ResizeGrip title="Drag to resize sensors (double-click to reset)" {...handleProps} />
+		</div>
+	);
+}
+
+/*=============================================================================
  SENSOR MINI CONTROLS -- Gain / Release Debounce / Button Group, rendered
  directly under each sensor's wave in the main view.
 
@@ -1650,10 +2422,33 @@ function FirmwareUpdateSection({ connected, sendText, connect, disconnect, onDev
 =============================================================================*/
 const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: number }) {
 	const tuning = useSyncExternalStore(subscribeTuningStore, getTuningStoreSnapshot);
+	// Width-aware: the "(default ...)" hints are dropped when the column is too
+	// narrow for them (they used to wrap onto a second line and break the
+	// row's alignment). The reset button's tooltip still states the default.
+	const uiScale = useContext(SensorUiScaleContext);
+	const [rootEl, setRootEl] = useState<HTMLDivElement | null>(null);
+	const [boxWidth, setBoxWidth] = useState(0);
+	useEffect(() => {
+		if (!rootEl || typeof ResizeObserver === "undefined") return;
+		const ro = new ResizeObserver((entries) => setBoxWidth(entries[0].contentRect.width));
+		ro.observe(rootEl);
+		return () => ro.disconnect();
+	}, [rootEl]);
+	const showDefaults = boxWidth === 0 || boxWidth >= 195 * uiScale;
 	const controls = (SensorTuningSection as unknown as { _getControls?: () => SensorTuningControls })._getControls?.();
-	if (!controls) return null;
+	if (!controls) return null; // SensorTuningSection hasn't mounted/rendered yet
 	const { effectiveCount, sensorLabels, commitGain, commitButtonGroup, commitReleaseDebounce } = controls;
-	const t = tuning[index] ?? { trigger: 700, release: 300, gainX100: 100, buttonGroup: index, releaseDebounceMs: 15 };
+	// Falls back to sane defaults rather than returning null when
+	// tuning[index] is momentarily missing -- the tuning array can briefly
+	// be shorter than numSensors during the render(s) between numSensors
+	// updating and the resize effect actually growing it, and the LAST
+	// configured sensor slot is the one most likely to hit that gap. This
+	// way the controls always render something usable instead of
+	// vanishing; they'll pick up the real values on the next legitimate
+	// update.
+	const t = tuning[index] ?? {
+		trigger: 700, release: 300, gainX100: 100, buttonGroup: index, releaseDebounceMs: 15,
+	};
 
 	// LOCAL optimistic state for the group dropdown.
 	// Problem: `tuning` is a shared external store snapshot. When ANY sensor's
@@ -1696,14 +2491,14 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 	};
 
 	return (
-		<div className="flex flex-col gap-1.5 px-2 py-1.5 rounded border border-border/60 bg-muted/10 text-[10px]">
+		<div ref={setRootEl} className="flex flex-col gap-1.5 px-2 py-1.5 rounded border border-border/60 bg-muted/10 min-w-0 text-[length:calc(10px*var(--sensor-ui-scale))]">
 			<div className="flex flex-col gap-0.5">
 				<div className="flex items-center justify-between">
 					<span className="text-muted-foreground">Gain</span>
 					<div className="flex items-center gap-1">
-						<span className="font-mono text-muted-foreground">
+						<span className="font-mono text-muted-foreground whitespace-nowrap">
 							{(t.gainX100 / 100).toFixed(2)}x
-							<span className="opacity-60"> (default {(DEFAULT_GAIN_X100 / 100).toFixed(2)}x)</span>
+							{showDefaults && <span className="opacity-60"> (default {(DEFAULT_GAIN_X100 / 100).toFixed(2)}x)</span>}
 						</span>
 						<button
 							type="button"
@@ -1711,15 +2506,22 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 							onClick={() => commitGain(index, DEFAULT_GAIN_X100)}
 							className="text-muted-foreground hover:text-foreground shrink-0"
 						>
-							<RefreshCw className="size-2.5" />
+							<RefreshCw className="size-[calc(10px*var(--sensor-ui-scale))]" />
 						</button>
 					</div>
 				</div>
-				<input
-					type="range" min={10} max={500} step={5} value={t.gainX100}
-					className="w-full h-1 accent-foreground cursor-pointer"
-					onChange={(e) => commitGain(index, Number(e.target.value))}
-				/>
+				<div className="flex items-center gap-1.5">
+					<input
+						type="range" min={10} max={500} step={5} value={t.gainX100}
+						className="w-full h-1 accent-foreground cursor-pointer"
+						onChange={(e) => commitGain(index, Number(e.target.value))}
+					/>
+					<CommitNumberInput
+						title="Type an exact Gain multiplier (0.10x - 5.00x), press Enter"
+						value={t.gainX100} min={0.1} max={5} step={0.05} decimals={2} scale={100}
+						onCommit={(raw) => commitGain(index, raw)}
+					/>
+				</div>
 			</div>
 
 			{/* Release Debounce */}
@@ -1727,9 +2529,9 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 				<div className="flex items-center justify-between">
 					<span className="text-muted-foreground" title="Release Debounce (ms)">Debounce</span>
 					<div className="flex items-center gap-1">
-						<span className="font-mono text-muted-foreground">
+						<span className="font-mono text-muted-foreground whitespace-nowrap">
 							{t.releaseDebounceMs}ms
-							<span className="opacity-60"> (default {DEFAULT_RELEASE_DEBOUNCE_MS}ms)</span>
+							{showDefaults && <span className="opacity-60"> (default {DEFAULT_RELEASE_DEBOUNCE_MS}ms)</span>}
 						</span>
 						<button
 							type="button"
@@ -1737,15 +2539,22 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 							onClick={() => commitReleaseDebounce(index, DEFAULT_RELEASE_DEBOUNCE_MS)}
 							className="text-muted-foreground hover:text-foreground shrink-0"
 						>
-							<RefreshCw className="size-2.5" />
+							<RefreshCw className="size-[calc(10px*var(--sensor-ui-scale))]" />
 						</button>
 					</div>
 				</div>
-				<input
-					type="range" min={0} max={100} step={1} value={t.releaseDebounceMs}
-					className="w-full h-1 accent-foreground cursor-pointer"
-					onChange={(e) => commitReleaseDebounce(index, Number(e.target.value))}
-				/>
+				<div className="flex items-center gap-1.5">
+					<input
+						type="range" min={0} max={100} step={1} value={t.releaseDebounceMs}
+						className="w-full h-1 accent-foreground cursor-pointer"
+						onChange={(e) => commitReleaseDebounce(index, Number(e.target.value))}
+					/>
+					<CommitNumberInput
+						title="Type an exact Release Debounce in ms (0 - 100), press Enter"
+						value={t.releaseDebounceMs} min={0} max={100} step={1}
+						onCommit={(raw) => commitReleaseDebounce(index, raw)}
+					/>
+				</div>
 			</div>
 
 			{/* Button Group — uses localGroup (optimistic) not t.buttonGroup (store)
@@ -1755,7 +2564,7 @@ const SensorMiniControls = memo(function SensorMiniControls({ index }: { index: 
 				<select
 					value={localGroup}
 					onChange={(e) => handleGroupChange(Number(e.target.value))}
-					className="w-full text-[10px] bg-white dark:bg-neutral-900 border border-border rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring"
+					className="w-full text-[length:calc(10px*var(--sensor-ui-scale))] bg-white dark:bg-neutral-900 border border-border rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring"
 				>
 					<option value={index} className="bg-white dark:bg-neutral-900">Own button (#{index})</option>
 					{Array.from({ length: effectiveCount }, (_, j) => j)
@@ -1948,14 +2757,19 @@ function LedPadPreview() {
 	// When a direction has multiple FSRs, this holds the arrayIndex of the one
 	// the user picked to edit. null = not yet chosen (show picker).
 	const [selectedSensorIdx, setSelectedSensorIdx] = useState<number | null>(null);
+	// "Cap" isn't a Direction -- it's the accent/non-sensor zone's own
+	// selection flag, kept separate so opening it doesn't fight with the
+	// four directional panels' own selection state.
+	const [accentSelected, setAccentSelected] = useState(false);
 	const [imageError, setImageError] = useState(false);
 	const sensors = useSyncExternalStore(subscribeLedStore, getLedStoreSnapshot);
+	const accent = useSyncExternalStore(subscribeAccentStore, getAccentStoreSnapshot);
 	const controls = (LedSection as unknown as { _getLedControls?: () => LedControls })._getLedControls?.();
 
 	if (!controls) {
 		return <p className="text-sm text-muted-foreground p-4">Connect to your pad to preview its LED layout.</p>;
 	}
-	const { updateSensor } = controls;
+	const { updateSensor, updateAccent } = controls;
 
 	// Find ALL sensors whose label contains the direction keyword (case-insensitive).
 	// "Up" matches "Up" and "Up 2"; "Down" matches "Down" and "Down 2", etc.
@@ -1978,6 +2792,7 @@ function LedPadPreview() {
 	});
 
 	const handlePanelClick = (direction: Direction, matches: { sensor: SensorZone; arrayIndex: number }[]) => {
+		setAccentSelected(false);
 		if (selectedDir === direction) {
 			// Toggle off
 			setSelectedDir(null);
@@ -1994,12 +2809,31 @@ function LedPadPreview() {
 		}
 	};
 
+	const handleAccentClick = () => {
+		setSelectedDir(null);
+		setSelectedSensorIdx(null);
+		setAccentSelected((v) => !v);
+	};
+
 	// The sensor currently being edited in the card (if any).
 	const editingSensor = selectedSensorIdx !== null ? sensors[selectedSensorIdx] : undefined;
 
 	return (
-		<div className="flex flex-col items-center gap-6 p-4 overflow-y-auto">
-			<div className="relative w-full max-w-md aspect-square rounded-lg overflow-hidden border border-border bg-muted/20">
+		<div className="flex flex-col items-center gap-4 p-4 overflow-y-auto">
+			{/* Explicit inline aspectRatio (not just the Tailwind aspect-square
+			    class) -- aspect-ratio utilities are a fairly recent Tailwind
+			    addition, and if this project's Tailwind version/config
+			    predates them the class silently no-ops, leaving this
+			    container's height to whatever the absolutely-positioned
+			    image/overlay children happen to report (which is how it ended
+			    up rendering as a squashed non-square rectangle). The inline
+			    style is plain CSS and can't silently fail like that. Capped at
+			    360px (down from max-w-md's 448px) so it sits more compactly
+			    above the edit card instead of dominating the tab. */}
+			<div
+				className="relative w-full rounded-lg overflow-hidden border border-border bg-muted/20"
+				style={{ maxWidth: 360, aspectRatio: "1 / 1" }}
+			>
 				{!imageError ? (
 					<img
 						src={PAD_BACKGROUND_URL}
@@ -2052,6 +2886,38 @@ function LedPadPreview() {
 						)}
 					</button>
 				))}
+
+				{/* Accent/cap node -- sits in the empty top-right corner (the
+				    4-direction cross layout above never uses the corners), so
+				    it doesn't compete for space with any sensor panel. Always
+				    clickable (unlike the direction buttons, it's never
+				    "disabled" since it isn't tied to a labeled sensor existing).
+				    AccentRimDemo traces LEDs around the panel's own rim (like
+				    the white selection ring drawn around this button when
+				    selected) -- tried filling the square with a grid first,
+				    but that read as tacky/random dots rather than a coherent
+				    strip. An even earlier version tried a CSS mix-blend-mode
+				    tint against the pad artwork, which barely showed anything
+				    since that blend mode only shifts hue while keeping the
+				    backdrop's own brightness -- against this mostly-gray
+				    corner there was nothing to shift. */}
+				<button
+					type="button"
+					onClick={handleAccentClick}
+					className={`absolute w-1/3 h-1/3 transition-all overflow-hidden cursor-pointer ${
+						accentSelected ? "ring-4 ring-inset ring-white/80" : ""
+					}`}
+					style={{ top: "0%", left: "66.666%", position: "absolute" }}
+					title={`${accent.label} — accent LEDs (${ACCENT_EFFECT_LABELS[accent.effect]})`}
+				>
+					<AccentRimDemo accent={accent} cellSize={5} count={16} />
+					<span className="absolute inset-x-0 bottom-0 flex flex-col items-center justify-center gap-0 pointer-events-none bg-black/45 py-0.5">
+						<span className="text-[9px] font-medium text-white/90 drop-shadow">{accent.label}</span>
+						<span className="text-[7px] text-white/70 drop-shadow uppercase tracking-wide">
+							{ACCENT_EFFECT_LABELS[accent.effect]}
+						</span>
+					</span>
+				</button>
 			</div>
 
 			{/* Multi-FSR picker: shown when a direction has 2+ sensors and no specific one chosen yet */}
@@ -2155,6 +3021,130 @@ function LedPadPreview() {
 					<p className="text-[10px] text-muted-foreground">
 						Changes here push to the board immediately, the same as editing this
 						sensor in the LED Panels list in the sidebar.
+					</p>
+				</div>
+			)}
+
+			{/* Accent/cap edit card -- same card layout as the sensor editor
+			    above, with an effect picker and speed slider added since this
+			    zone runs its own animation rather than a static color. */}
+			{accentSelected && (
+				<div className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-card w-full max-w-sm">
+					<div className="flex items-center justify-between">
+						<h3 className="text-sm font-semibold">{accent.label}</h3>
+						<button type="button" onClick={() => setAccentSelected(false)} className="text-xs text-muted-foreground hover:text-foreground">
+							Close
+						</button>
+					</div>
+
+					<label className="flex flex-col gap-1 text-xs">
+						Name
+						<input
+							type="text"
+							value={accent.label}
+							maxLength={16}
+							onChange={(e) => updateAccent({ label: e.target.value })}
+							className="px-2 py-1 rounded border border-border bg-transparent text-sm"
+						/>
+					</label>
+
+					{/* Live demo -- same AccentRimDemo used on the Cap node
+					    above, just bigger, so the ring is easier to follow while
+					    tweaking effect/color/speed. */}
+					<div className="flex flex-col gap-1 p-2 rounded border border-border bg-muted/10">
+						<span className="text-[10px] text-muted-foreground uppercase tracking-wide">Live demo</span>
+						<div className="relative w-full aspect-square rounded overflow-hidden border border-border/60">
+							<AccentRimDemo accent={accent} cellSize={12} count={24} />
+						</div>
+					</div>
+
+					<div className="grid grid-cols-2 gap-1.5">
+						{(Object.keys(ACCENT_EFFECT_LABELS) as AccentEffect[]).map((fx) => (
+							<button
+								key={fx}
+								type="button"
+								onClick={() => updateAccent({ effect: fx })}
+								className={`text-xs py-1.5 rounded border transition-colors ${
+									accent.effect === fx
+										? "bg-foreground text-background border-foreground"
+										: "bg-transparent text-muted-foreground border-border hover:text-foreground"
+								}`}
+							>
+								{ACCENT_EFFECT_LABELS[fx]}
+							</button>
+						))}
+					</div>
+
+					{accent.effect !== "off" && (
+						<>
+							{accent.effect !== "rainbow" && (
+								<label className="flex flex-col gap-1 text-xs">
+									Color
+									<input
+										type="color"
+										value={accent.color}
+										onChange={(e) => updateAccent({ color: e.target.value })}
+										className="h-9 w-full rounded border border-border cursor-pointer"
+									/>
+								</label>
+							)}
+							{/* Speed has no meaning for a static color -- Solid never
+							    actually used it (see useAccentPreviewFrame's fix for why
+							    the preview looked like it was pulsing in time with it). */}
+							{accent.effect !== "solid" && (
+								<label className="flex flex-col gap-1 text-xs">
+									Speed
+									<input
+										type="range" min={1} max={255} value={accent.speed}
+										onChange={(e) => updateAccent({ speed: Number(e.target.value) })}
+										className="w-full accent-foreground cursor-pointer"
+									/>
+								</label>
+							)}
+						</>
+					)}
+
+					<label className="flex flex-col gap-1 text-xs">
+						LED Offset
+						<input
+							type="number" min={0} max={255}
+							value={accent.ledOffset}
+							onChange={(e) => updateAccent({ ledOffset: Math.max(0, Number(e.target.value) || 0) })}
+							className="px-2 py-1 rounded border border-border bg-transparent text-sm"
+						/>
+					</label>
+
+					<label className="flex flex-col gap-1 text-xs">
+						LED Count
+						<input
+							type="number" min={1} max={64}
+							value={accent.ledCount}
+							onChange={(e) => updateAccent({ ledCount: Math.max(1, Number(e.target.value) || 1) })}
+							className="px-2 py-1 rounded border border-border bg-transparent text-sm"
+						/>
+					</label>
+
+					{(() => {
+						const overlapping = findAccentOverlap(accent, sensors);
+						if (overlapping.length === 0) return null;
+						return (
+							<p className="text-[10px] text-amber-500">
+								⚠ Overlaps {overlapping.map((s) => s.label).join(", ")}'s LED range
+								-- pressing {overlapping.length > 1 ? "those sensors" : "that sensor"} will
+								steal these LEDs while held, and they may stay black after
+								release until this zone is touched again. Move this Offset past
+								LED {Math.max(...overlapping.map((s) => s.ledOffset + s.ledCount))} or
+								move {overlapping.length > 1 ? "their" : "its"} zone in the LED
+								Panels list to fix.
+							</p>
+						);
+					})()}
+
+					<p className="text-[10px] text-muted-foreground">
+						Not tied to any FSR sensor -- this zone runs its animation on the
+						board itself, so it keeps going even after the dashboard closes.
+						Changes here push to the board immediately, same as editing it in
+						the LED Panels list in the sidebar.
 					</p>
 				</div>
 			)}
@@ -2511,7 +3501,6 @@ const Dashboard = () => {
 	}, []);
 
 
-
 	const [thresholds, setThresholds] = useState<number[]>([]);
 	const [sensorLabels, setSensorLabels] = useState<string[]>([]);
 
@@ -2579,6 +3568,39 @@ const Dashboard = () => {
 	// handleThresholdChange and sensorBars below).
 	const [liveTriggerValues, setLiveTriggerValues] = useState<number[]>([]);
 	const [liveReleaseValues, setLiveReleaseValues] = useState<number[]>([]);
+
+	// Wave-signal graph visibility (persisted). Hiding it frees the whole
+	// lower area for the Trigger/Release + tuning controls.
+	const [graphVisible, setGraphVisible] = useState<boolean>(() => {
+		try { return localStorage.getItem("webfsr_public_graph_visible") !== "false"; } catch { return true; }
+	});
+	const toggleGraphVisible = useStableCallback(() => {
+		const next = !graphVisible;
+		setGraphVisible(next);
+		try { localStorage.setItem("webfsr_graph_visible", String(next)); } catch { /* ignore */ }
+	});
+
+	// Undo history for Trigger / Release drags. One entry = the values BEFORE
+	// a burst of changes to one sensor; continuous drags within COALESCE_MS
+	// collapse into a single entry so Ctrl+Z jumps back to where the drag
+	// STARTED rather than one pixel back.
+	const UNDO_LIMIT = 100;
+	const UNDO_COALESCE_MS = 600;
+	const undoStackRef = useRef<Array<{ index: number; trigger?: number; release?: number }>>([]);
+	const lastUndoPushRef = useRef<{ index: number; kind: "trigger" | "release"; t: number } | null>(null);
+	const suppressUndoRecordRef = useRef(false);
+	const [undoDepth, setUndoDepth] = useState(0);
+	const recordUndo = (index: number, kind: "trigger" | "release", prev: { trigger?: number; release?: number }) => {
+		if (suppressUndoRecordRef.current) return;
+		const now = Date.now();
+		const last = lastUndoPushRef.current;
+		lastUndoPushRef.current = { index, kind, t: now };
+		if (last && last.index === index && last.kind === kind && now - last.t < UNDO_COALESCE_MS) return;
+		const stack = undoStackRef.current;
+		stack.push({ index, ...prev });
+		if (stack.length > UNDO_LIMIT) stack.shift();
+		setUndoDepth(stack.length);
+	};
 	// Per-sensor "lock Release to Trigger" toggle -- see the matching
 	// comment in the personal/dev build for the full reasoning. Purely
 	// dashboard-side; the firmware still just receives independent "y"/
@@ -2950,11 +3972,11 @@ const Dashboard = () => {
 	// settings ProfilesSection already persists (via getAllSettings/
 	// updateAllSettings), plus thresholds, sensor labels, display order, and
 	// the per-sensor tuning (gain/button group/release debounce/trigger/
-	// release) that lives in SensorTuningSection. This is separate from
-	// FirmwareUpdateSection's "Back Up My Settings": that one is a raw
-	// EEPROM snapshot used around OTA firmware updates specifically; this
-	// one mirrors a saved Profile, meant for sharing a full setup or keeping
-	// an offline copy of it as a portable file.
+	// release) that lives in SensorTuningSection. This is
+	// separate from FirmwareUpdateSection's "Back Up My Settings": that one
+	// is a raw EEPROM snapshot used around OTA firmware updates
+	// specifically; this one mirrors a saved Profile, meant for sharing a
+	// full setup or keeping an offline copy of it as a portable file.
 	const [profileImportStatus, setProfileImportStatus] = useState<string | null>(null);
 	const profileImportInputRef = useRef<HTMLInputElement>(null);
 
@@ -3100,6 +4122,10 @@ const Dashboard = () => {
 	// Trigger never has a second value to reconcile.
 	const handleThresholdChange = useStableCallback((index: number, value: number) => {
 		const prevTrigger = thresholds[index];
+		if (typeof prevTrigger === "number" && prevTrigger !== value) {
+			const lockedRelease = advancedTuningEnabled && releaseLocked[index] ? liveReleaseValues[index] : undefined;
+			recordUndo(index, "trigger", { trigger: prevTrigger, release: lockedRelease });
+		}
 		const newThresholds = [...thresholds];
 		newThresholds[index] = value;
 		setThresholds(newThresholds);
@@ -3134,6 +4160,8 @@ const Dashboard = () => {
 	// on, since that's the only time SensorBar is given a
 	// secondaryThreshold + this callback together (see sensorBars below).
 	const handleSecondaryThresholdChange = useStableCallback((index: number, value: number) => {
+		const prevRelease = liveReleaseValues[index];
+		if (typeof prevRelease === "number" && prevRelease !== value) recordUndo(index, "release", { release: prevRelease });
 		setLiveReleaseValues((prev) => {
 			const next = [...prev];
 			next[index] = value;
@@ -3141,6 +4169,43 @@ const Dashboard = () => {
 		});
 		if (connected) sendText(`r ${index} ${value}\n`);
 	});
+
+	// Pops the most recent Trigger/Release change and re-applies the old
+	// value(s) through the normal handlers (so profile save + firmware
+	// "y"/"r" commands all happen) without recording a new history entry.
+	const undoLastThresholdChange = useStableCallback(() => {
+		const entry = undoStackRef.current.pop();
+		setUndoDepth(undoStackRef.current.length);
+		lastUndoPushRef.current = null;
+		if (!entry) return;
+		suppressUndoRecordRef.current = true;
+		try {
+			if (typeof entry.trigger === "number") handleThresholdChange(entry.index, entry.trigger);
+			// Applied AFTER trigger so a locked-release shift is overridden
+			// by the exact value that was stored.
+			if (typeof entry.release === "number") handleSecondaryThresholdChange(entry.index, entry.release);
+		} finally {
+			suppressUndoRecordRef.current = false;
+		}
+	});
+
+	// Ctrl/Cmd+Z. Ignored while typing in an input/textarea/select so native
+	// text undo (e.g. in the new numeric boxes) still works.
+	useEffect(() => {
+		const onKeyDown = (e: KeyboardEvent) => {
+			if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== "z") return;
+			const el = e.target as HTMLElement | null;
+			if (el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName))) {
+				// Range sliders have no text undo, so allow those through.
+				if (!(el.tagName === "INPUT" && (el as HTMLInputElement).type === "range")) return;
+			}
+			if (undoStackRef.current.length === 0) return;
+			e.preventDefault();
+			undoLastThresholdChange();
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, [undoLastThresholdChange]);
 
 	const onLabelChangeStable = useStableCallback((index: number, value: string) => {
 		const newLabels = [...sensorLabels];
@@ -3201,7 +4266,7 @@ const Dashboard = () => {
 		return (
 			<div
 				key={`sensor-pos-${position}`}
-				className={`relative h-full flex flex-col transition-opacity ${sensorBarsDrag.draggingPos === position ? "opacity-40" : ""} ${sensorBarsDrag.dragOverPos === position ? "ring-2 ring-primary rounded" : ""}`}
+				className={`relative h-full min-h-0 min-w-0 flex flex-col transition-opacity ${sensorBarsDrag.draggingPos === position ? "opacity-40" : ""} ${sensorBarsDrag.dragOverPos === position ? "ring-2 ring-primary rounded" : ""}`}
 				onDragOver={sensorBarsDrag.handleDragOver(position)}
 				onDrop={sensorBarsDrag.handleDrop(position)}
 			>
@@ -3244,10 +4309,10 @@ const Dashboard = () => {
 				    reasoning as the slot below it. Bumped 26px -> 44px to
 				    fit the Release value/default/reset row above the lock
 				    button. */}
-				<div className="shrink-0 h-[44px] mt-1 flex flex-col items-center justify-center gap-0.5">
+				<div style={{ height: "calc(44px * var(--sensor-ui-scale))" }} className="shrink-0 mt-1 flex flex-col items-center justify-center gap-0.5">
 					{advancedTuningEnabled && (
 						<>
-							<div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+							<div className="flex items-center gap-1 text-[length:calc(10px*var(--sensor-ui-scale))] text-muted-foreground">
 								<span>
 									Release: <span className="text-green-500 font-mono">{liveReleaseValues[index] ?? "—"}</span>
 									<span className="opacity-60"> (default {defaultReleaseFor(thresholds[index])})</span>
@@ -3258,14 +4323,14 @@ const Dashboard = () => {
 									onClick={() => handleSecondaryThresholdChange(index, defaultReleaseFor(thresholds[index]))}
 									className="text-muted-foreground hover:text-foreground shrink-0"
 								>
-									<RefreshCw className="size-2.5" />
+									<RefreshCw className="size-[calc(10px*var(--sensor-ui-scale))]" />
 								</button>
 							</div>
 							<button
 								type="button"
 								onClick={() => setReleaseLocked((prev) => ({ ...prev, [index]: !prev[index] }))}
 								title="When on, moving Trigger also moves Release by the same amount, preserving their gap"
-								className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border transition-colors ${
+								className={`flex items-center gap-1 text-[length:calc(10px*var(--sensor-ui-scale))] px-2 py-0.5 rounded border transition-colors ${
 									releaseLocked[index]
 										? "bg-foreground text-background border-foreground"
 										: "bg-transparent text-muted-foreground border-border"
@@ -3277,16 +4342,14 @@ const Dashboard = () => {
 					)}
 				</div>
 				{/* Always mounted at a fixed height -- only the content inside
-				    toggles. See the matching comment in the personal/dev
-				    build for the full reasoning: the graph above (flex-1)
-				    was still resizing on toggle because this sibling's
-				    presence/height was conditional, even after the outer box
-				    became constant-height. */}
-				<div className="shrink-0 h-[152px] mt-1 pt-2 border-t border-border/40">
-					{/* Gain / Release Debounce / Button Group are useful regardless
-					    of whether Sensor Tuning is on -- they don't touch Trigger or
-					    Release, so there's no reason to gate them behind that toggle.
-					    Always mounted now instead of only when advancedTuningEnabled. */}
+				    toggles. overflow-y-auto lets a narrow column scroll WITHIN this
+				    slot rather than pushing into/behind the sensor wave above. */}
+				<div style={{ height: "calc(152px * var(--sensor-ui-scale))" }} className="shrink-0 mt-1 pt-2 border-t border-border/40 overflow-y-auto">
+					{/* Gain / Release Debounce / Button Group are
+					    useful regardless of whether Sensor Tuning is on -- none of
+					    them touch Trigger or Release, so there's no reason to gate
+					    them behind that toggle. Always mounted now instead of only
+					    when advancedTuningEnabled. */}
 					<SensorMiniControls index={index} />
 				</div>
 			</div>
@@ -4174,7 +5237,7 @@ const Dashboard = () => {
 					) : (
 					<>
 					{latestData ? (
-						<>
+						<div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-y-auto overflow-x-hidden">
 							{/* ── SENSOR TUNING TOGGLE -- a simple button, not the full
 							    panel (that stays in the sidebar). Flips the same
 							    advancedTuningEnabled flag the sidebar's own toggle
@@ -4188,27 +5251,51 @@ const Dashboard = () => {
 								>
 									Sensor Tuning: {advancedTuningEnabled ? "On" : "Off"}
 								</Button>
+								<Button
+									variant={graphVisible ? "default" : "outline"}
+									size="sm"
+									onClick={toggleGraphVisible}
+									className="gap-1.5"
+									title="Show or hide the wave signal graph"
+								>
+									Graph: {graphVisible ? "On" : "Off"}
+								</Button>
+								<Button
+									variant="outline"
+									size="sm"
+									onClick={undoLastThresholdChange}
+									disabled={undoDepth === 0}
+									className="gap-1.5"
+									title="Undo last Trigger/Release change (Ctrl+Z)"
+								>
+									Undo{undoDepth > 0 ? ` (${undoDepth})` : ""}
+								</Button>
 							</div>
 
 							{/* min-h-[420px] is now ALWAYS applied, not just when Advanced
-						    Tuning is on -- see the matching comment in the personal/
-						    dev build for the full reasoning (toggling used to resize
-						    this container, which is very likely what SensorBar's own
-						    internal sizing was mismeasuring on that transition). */}
-						<div className="flex gap-2 shrink-0 h-100 min-h-[450px]">
-								<div className="px-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm grow">
+						    Tuning is on -- toggling used to resize this container,
+						    which is very likely what SensorBar's own internal sizing
+						    was mismeasuring on that transition. min-h-[450px] ->
+						    min-h-[550px]: bumped to fit the mini-controls slot's own
+						    the mini-controls slot's height plus everything already accounted
+						    for above. */}
+						<ResizableSensorPanel numSensors={numSensors} reservedWidth={heartrateSettings.showHeartrateMonitor ? 270 : 0}>
+								<div className="px-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm grow min-w-0 flex flex-col overflow-x-auto overflow-y-hidden">
 									{advancedTuningEnabled && (
-										<p className="text-[11px] text-amber-500 px-1 pt-2">
+										<p className="text-[11px] text-amber-500 px-1 pt-2 shrink-0">
 											Sensor Tuning is on — drag the green dashed line to adjust
 											Release. The red line (Trigger/sensitivity) works the same
 											as always and isn't affected by this toggle.
 										</p>
 									)}
-									<div className="grid grid-flow-col auto-cols-fr gap-4 h-full w-full py-2">{sensorBars}</div>
+									<div
+										className="grid grid-flow-col grid-rows-1 auto-cols-fr gap-4 flex-1 min-h-0 w-full py-2"
+										style={{ minWidth: numSensors * SENSOR_MIN_COL_W + Math.max(0, numSensors - 1) * 16 }}
+									>{sensorBars}</div>
 								</div>
 
 								{heartrateSettings.showHeartrateMonitor && (
-									<div className="p-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm aspect-square h-full flex flex-col items-center justify-center gap-2 min-w-64">
+									<div className="p-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm h-full w-64 shrink min-w-[9rem] max-w-[30%] overflow-hidden flex flex-col items-center justify-center gap-2">
 										<div
 											className={`flex ${heartrateSettings.verticalAlignHeartrate ? "flex-col" : "flex-row"} items-center gap-4 w-full h-full justify-center`}
 										>
@@ -4239,10 +5326,10 @@ const Dashboard = () => {
 										</div>
 									</div>
 								)}
-							</div>
+							</ResizableSensorPanel>
 
-							<div className="p-1 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm mt-2 grow min-h-0">
-								<div className="h-full">
+							{graphVisible && (
+								<ResizableGraphPanel>
 									<TimeSeriesGraph
 										latestData={latestData}
 										timeWindow={graphSettings.timeWindow}
@@ -4258,9 +5345,9 @@ const Dashboard = () => {
 										activationColor={colorSettings.graphActivationColor}
 										theme={resolvedTheme}
 									/>
-								</div>
-							</div>
-						</>
+								</ResizableGraphPanel>
+							)}
+						</div>
 					) : (
 						<>
 							<div className="flex gap-2 shrink-0 h-100">
@@ -4292,7 +5379,7 @@ const Dashboard = () => {
 								</div>
 
 								{heartrateSettings.showHeartrateMonitor && (
-									<div className="p-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm aspect-square h-full flex flex-col items-center justify-center gap-2 min-w-64">
+									<div className="p-4 border rounded-lg bg-white dark:bg-neutral-900 shadow-sm h-full w-64 shrink min-w-[9rem] max-w-[30%] overflow-hidden flex flex-col items-center justify-center gap-2">
 										<div
 											className={`flex ${heartrateSettings.verticalAlignHeartrate ? "flex-col" : "flex-row"} items-center gap-4 w-full h-full justify-center`}
 										>
